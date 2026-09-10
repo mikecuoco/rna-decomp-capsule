@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -e
+
+GITHUB_USERNAME=mikecuoco
+export DOTFILES_PROFILE=codeocean
+sh -c "$(curl -fsLS https://get.chezmoi.io)" -- init --apply $GITHUB_USERNAME

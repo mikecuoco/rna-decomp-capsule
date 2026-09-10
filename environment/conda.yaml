@@ -1,0 +1,51 @@
+# Conda environment for the SEA-AD SST DRVI factorization.
+#
+# Direct dependencies only -- this is a hand-edited spec, not a `conda env export`.
+# Channels and their order are written here so the file solves on a machine whose
+# ~/.condarc does not already set them.
+#
+# Apply with:
+#   mamba env update -p /scratch/.dotfiles/envs/conda/sst-drvi \
+#     -f /root/capsule/environment/conda.yaml
+#
+# `envs_dirs`/`pkgs_dirs` in ~/.condarc point at /scratch, which keeps the ~10 GB
+# environment and the package cache off the ~5 GB root filesystem.
+name: sst-drvi
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults
+dependencies:
+  - python=3.12
+  # --- torch / CUDA -------------------------------------------------------
+  - pytorch-gpu
+  - cuda-driver-dev=13.3
+  - cuda-cudart-dev=13.3
+  # --- single-cell modelling ----------------------------------------------
+  # scvi-tools >= 1.5 is required: `scvi.external.DRVI` does not exist below it.
+  - scvi-tools>=1.5
+  - anndata
+  - scanpy
+  - h5py
+  # --- numerics / stats ---------------------------------------------------
+  - numpy
+  - pandas
+  - scipy
+  - scikit-misc
+  - umap-learn
+  - leidenalg
+  - python-igraph
+  # --- plotting -----------------------------------------------------------
+  - matplotlib
+  - seaborn
+  # --- tooling ------------------------------------------------------------
+  - pyyaml
+  - session-info2
+  - ipykernel
+  - jupyter
+  - nbconvert
+  - pip
+  - pip:
+      # DRVI's plotting / interpretability helpers. Not packaged on conda-forge.
+      # The model itself comes from scvi-tools (scvi.external.DRVI).
+      - drvi-py>=0.2.7

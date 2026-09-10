@@ -1,0 +1,6 @@
+/data/
+.vscode
+
+# Code Ocean runtime mounts, not repository content
+/results
+/scratch

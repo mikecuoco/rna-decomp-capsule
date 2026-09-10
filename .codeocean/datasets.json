@@ -1,0 +1,9 @@
+{
+	"version": 1,
+	"attached_datasets": [
+		{
+			"id": "94b2b698-9ee7-484c-914f-68c48bd9812f",
+			"mount": "multiregion"
+		}
+	]
+}
