@@ -1,11 +1,14 @@
 #!/usr/bin/env python
-"""Train DRVI on the prepared SEA-AD SST cohort and write an interpretable embedding.
+"""Train scVI on the prepared SEA-AD SST cohort, as the baseline DRVI is compared against.
 
-Model: ``scvi.external.DRVI`` (scvi-tools >= 1.5). Everything GPU-bound -- training,
-the latent representation, the interpretability scores and the latent UMAP -- happens
-here, so ``01_inspect_factors.ipynb`` only has to read a small h5ad.
+Model: ``scvi.model.SCVI``. Mirrors ``train_drvi.py`` on every shared setting -- latent
+size, architecture, batch handling, dispersion, schedule -- so that a difference between
+the two embeddings is attributable to DRVI's split decoder rather than to the setup.
+What is deliberately absent is DRVI's interpretability machinery: scVI's dimensions are
+not claimed to be individually meaningful, so there are no per-direction traversal scores
+to compute, and the latent dimensions are named ``Z_n`` rather than ``DR_n``.
 
-    python train_drvi.py [--smoke] [--max-epochs N] [--batch-size N] [--force]
+    python train_scvi.py [--devices 4] [--smoke] [--max-epochs N] [--force]
 """
 
 from __future__ import annotations
@@ -26,14 +29,14 @@ import torch
 
 import sst_drvi as S
 
-logger = logging.getLogger("sst_drvi.train")
+logger = logging.getLogger("sst_drvi.train_scvi")
 
 SMOKE_CELLS = 20_000
 SMOKE_EPOCHS = 3
 
 
 def parse_args() -> argparse.Namespace:
-    cfg = S.DrviConfig()
+    cfg = S.ScviConfig()
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--n-latent", type=int, default=cfg.n_latent)
     p.add_argument("--max-epochs", type=int, default=cfg.max_epochs)
@@ -43,6 +46,12 @@ def parse_args() -> argparse.Namespace:
         "--dispersion",
         default=cfg.dispersion,
         choices=["gene", "gene-batch", "gene-label", "gene-cell"],
+    )
+    p.add_argument(
+        "--gene-likelihood",
+        default=cfg.gene_likelihood,
+        choices=["nb", "zinb", "poisson", "normal"],
+        help='scVI has no "pnb"; the DRVI runs use that log-space variant',
     )
     p.add_argument("--seed", type=int, default=cfg.seed)
     p.add_argument(
@@ -55,14 +64,20 @@ def parse_args() -> argparse.Namespace:
         "batch is batch_size * devices, and scvi-tools disables early stopping",
     )
     p.add_argument(
+        "--kl-warmup-epochs",
+        type=int,
+        default=cfg.kl_warmup_epochs,
+        help="spread the KL warmup over this many epochs. Unset uses scvi's own warmup; "
+        "pass --max-epochs' value to match the DRVI runs exactly (DRVI needs the long "
+        "warmup to disentangle, plain scVI does not)",
+    )
+    p.add_argument(
         "--continuous-covariates",
         nargs="*",
         default=list(cfg.continuous_covariate_keys),
         metavar="OBS_COL",
         help="obs columns to model as continuous covariates so the latent space does not "
-        'have to encode them, e.g. --continuous-covariates "Fraction mitochondrial UMIs" '
-        '"Genes detected". Note these are only partly technical in neurons -- regressing '
-        "out mitochondrial content can remove real metabolic signal",
+        "have to encode them; standardized first, as in train_drvi.py",
     )
     p.add_argument(
         "--categorical-covariates",
@@ -112,14 +127,16 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     cfg = replace(
-        S.DrviConfig(),
+        S.ScviConfig(),
         n_latent=args.n_latent,
         max_epochs=SMOKE_EPOCHS if args.smoke else args.max_epochs,
         batch_size=args.batch_size,
         batch_key=args.batch_key,
         dispersion=args.dispersion,
+        gene_likelihood=args.gene_likelihood,
         seed=args.seed,
         devices=args.devices,
+        kl_warmup_epochs=SMOKE_EPOCHS if args.smoke and args.kl_warmup_epochs else args.kl_warmup_epochs,
         categorical_covariate_keys=tuple(args.categorical_covariates),
         continuous_covariate_keys=tuple(args.continuous_covariates),
         encode_covariates=args.encode_covariates,
@@ -130,10 +147,10 @@ def main() -> None:
         + (f"_{args.suffix}" if args.suffix else "")
         + ("_smoke" if args.smoke else "")
     )
-    model_path = S.MODELS_DIR / run / "drvi"
-    out_embed = S.EMBED_DIR / f"{run}_drvi_embed.h5ad"
+    model_path = S.MODELS_DIR / run / "scvi"
+    out_embed = S.EMBED_DIR / f"{run}_scvi_embed.h5ad"
 
-    S.setup_logging(S.LOGS_DIR / f"train_{run}.log")
+    S.setup_logging(S.LOGS_DIR / f"train_{run}_scvi.log")
     if out_embed.exists() and not args.force:
         logger.info("embedding exists, skipping: %s (use --force)", out_embed)
         return
@@ -175,16 +192,17 @@ def main() -> None:
         # the model is registered on the scaled columns; the config keeps the source names
         cfg = replace(cfg, continuous_covariate_keys=tuple(scaled))
 
-    model = S.build_drvi_model(adata, cfg)
+    model = S.build_scvi_model(adata, cfg)
     logger.info("%s", model)
 
     accelerator = "gpu" if torch.cuda.is_available() else "cpu"
-    # scvi-tools turns early stopping off under DDP anyway; say so rather than passing a
-    # setting that is silently dropped.
     ddp = S.ddp_trainer_kwargs(cfg.devices)
     if ddp:
         logger.info("DDP: %s (early stopping unavailable, running all %d epochs)",
                     ddp["strategy"], cfg.max_epochs)
+    plan_kwargs = (
+        {"n_epochs_kl_warmup": cfg.kl_warmup_epochs} if cfg.kl_warmup_epochs else {}
+    )
     t = time.perf_counter()
     model.train(
         max_epochs=cfg.max_epochs,
@@ -193,9 +211,7 @@ def main() -> None:
         early_stopping=not ddp,
         early_stopping_patience=cfg.early_stopping_patience,
         early_stopping_monitor="elbo_validation",
-        # DRVI wants the KL warmup spread over the whole run; a short warmup collapses
-        # the disentanglement the split decoder is meant to produce.
-        plan_kwargs={"n_epochs_kl_warmup": cfg.max_epochs},
+        plan_kwargs=plan_kwargs,
         accelerator=accelerator,
         devices=cfg.devices,
         datasplitter_kwargs={
@@ -226,47 +242,42 @@ def main() -> None:
     # every logged metric, not just the ELBO: the QC notebook plots reconstruction loss
     # too, and concatenating whatever is present cannot fail late in a long run.
     history = pd.concat(model.history.values(), axis=1)
-    history.to_csv(model_path.parent / "history.csv")
+    history.to_csv(model_path.parent / "history_scvi.csv")
     logger.info("history metrics: %s", list(history.columns))
     logger.info("saved model -> %s", model_path)
 
-    # `dispersion="gene-batch"` fits one dispersion per gene per library. With ~600
-    # libraries and ~390 cells each, all-zero (gene, batch) cells can drive px_r to
-    # +/-inf; a non-finite px_r makes every downstream score meaningless, so check it.
+    # Same exposure as the DRVI runs: `dispersion="gene-batch"` fits one dispersion per
+    # gene per library from ~390 cells, and all-zero (gene, library) cells can drive px_r
+    # to +/-inf.
     px_r_finite = bool(torch.isfinite(model.module.px_r).all().item())
     timings["px_r_finite"] = px_r_finite
     logger.info("px_r_finite: %s (dispersion=%s)", px_r_finite, cfg.dispersion)
     if not px_r_finite:
         logger.error(
             "px_r contains non-finite values -- retrain with --dispersion gene before "
-            "trusting the interpretability scores"
+            "trusting this embedding"
         )
 
     # ------------------------------------------------------------------ embedding
     t = time.perf_counter()
-    embed = S.latent_embedding(model, adata, cfg)
-    model.set_latent_dimension_stats(embed, vanished_threshold=cfg.vanished_threshold)
-    n_vanished = int(embed.var["vanished"].sum())
+    embed = S.latent_embedding(model, adata, cfg, prefix="Z")
+    # scVI does not prune dimensions the way DRVI does, so there is no `vanished` flag to
+    # write -- only the shared usage statistics, which is what lets the QC notebook
+    # compare how much of n_latent each model actually spent.
+    stats = S.latent_stats(embed, threshold=cfg.used_threshold)
+    embed.var["title"] = [f"Z {i + 1}" for i in range(embed.n_vars)]
+    for col in ("std", "mean_abs", "max_abs", "used"):
+        embed.var[col] = stats[col].to_numpy()
     logger.info(
-        "latent dims: %d used, %d vanished (threshold %.2f)",
-        embed.n_vars - n_vanished,
-        n_vanished,
-        cfg.vanished_threshold,
+        "latent dims: %d of %d above |z| >= %.2f",
+        int(stats["used"].sum()),
+        embed.n_vars,
+        cfg.used_threshold,
     )
-    timings["embed_min"] = (time.perf_counter() - t) / 60
-
-    # ------------------------------------------------------------ interpretability
-    t = time.perf_counter()
-    S.calculate_interpretability(embed=embed, model=model, methods=("IND", "OOD"), directional=True)
     embed.uns["gene_names"] = adata.var_names.to_numpy(dtype=str)
     if "covariate_scaling" in adata.uns:
         embed.uns["covariate_scaling"] = adata.uns["covariate_scaling"]
-    timings["interpret_min"] = (time.perf_counter() - t) / 60
-    logger.info(
-        "interpretability score keys: %s (%.1f min)",
-        sorted(embed.varm.keys()),
-        timings["interpret_min"],
-    )
+    timings["embed_min"] = (time.perf_counter() - t) / 60
 
     # -------------------------------------------------------------- latent UMAP
     t = time.perf_counter()
@@ -276,10 +287,10 @@ def main() -> None:
     logger.info("latent UMAP done (%.1f min)", timings["umap_min"])
 
     # ------------------------------------------------------------------- persist
-    # h5ad `uns` cannot hold tuples or None, which DrviConfig has both of, so the
-    # config round-trips as JSON.
-    embed.uns["drvi_config"] = json.dumps(cfg.as_dict())
-    embed.uns["drvi_run"] = {
+    # h5ad `uns` cannot hold tuples or None, which ScviConfig has both of, so the config
+    # round-trips as JSON.
+    embed.uns["scvi_config"] = json.dumps(cfg.as_dict())
+    embed.uns["scvi_run"] = {
         "run": run,
         "model_path": str(model_path),
         "input": str(args.input),

@@ -14,6 +14,7 @@ Filesystem contract (Code Ocean capsule):
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from collections.abc import Sequence
 from contextlib import contextmanager
@@ -34,6 +35,8 @@ PREPARED_DIR = SCRATCH / "prepared"
 MODELS_DIR = SCRATCH / "models"
 EMBED_DIR = SCRATCH / "embeddings"
 LOGS_DIR = SCRATCH / "logs"
+#: scvi-tools persists training history here under DDP (see :func:`ddp_trainer_kwargs`).
+LIGHTNING_LOGS = SCRATCH / "lightning_logs"
 FILE_INDEX = SCRATCH / "gpboost_file_index.csv"
 
 PREPARED_SST = PREPARED_DIR / "sst_counts.h5ad"
@@ -50,12 +53,23 @@ def run_name(n_latent: int, include_chodl: bool = False) -> str:
     return f"{scope}_k{n_latent}"
 
 
-def model_dir(n_latent: int, include_chodl: bool = False) -> Path:
-    return MODELS_DIR / run_name(n_latent, include_chodl) / "drvi"
+def run_paths(run: str, model: str = "drvi") -> tuple[Path, Path]:
+    """``(model directory, embedding path)`` for a run name.
+
+    Takes the run name directly, so it also addresses suffixed runs such as
+    ``sst_k64_covar`` that :func:`run_name` does not construct.
+    """
+    return MODELS_DIR / run / model, EMBED_DIR / f"{run}_{model}_embed.h5ad"
 
 
-def embed_path(n_latent: int, include_chodl: bool = False) -> Path:
-    return EMBED_DIR / f"{run_name(n_latent, include_chodl)}_embed.h5ad"
+def model_dir(n_latent: int, include_chodl: bool = False, model: str = "drvi") -> Path:
+    """Directory one trained model was saved into. ``model`` is ``"drvi"`` or ``"scvi"``."""
+    return MODELS_DIR / run_name(n_latent, include_chodl) / model
+
+
+def embed_path(n_latent: int, include_chodl: bool = False, model: str = "drvi") -> Path:
+    """Latent AnnData for one run and model."""
+    return EMBED_DIR / f"{run_name(n_latent, include_chodl)}_{model}_embed.h5ad"
 
 
 # ------------------------------------------------------------------------ logging
@@ -100,6 +114,62 @@ def log_provenance() -> None:
         logger.info("drvi-py %s", drvi.__version__)
     except ImportError:  # only needed for the plotting helpers
         logger.warning("drvi-py not importable; plotting helpers unavailable")
+
+
+# --------------------------------------------------------------------- multi-GPU
+
+#: Lightning strategy string. scvi-tools keys distributed sampling off ``"ddp" in
+#: strategy`` (``scvi/model/_utils.py``), and the ``find_unused_parameters`` variant is
+#: required here rather than optional -- see :func:`ddp_trainer_kwargs`.
+DDP_STRATEGY = "ddp_find_unused_parameters_true"
+
+
+def ddp_trainer_kwargs(devices: int, log_save_dir: Path = LIGHTNING_LOGS) -> dict:
+    """Extra ``model.train`` kwargs for multi-GPU training; empty for a single device.
+
+    Two things make plain ``"ddp"`` the wrong choice for these models:
+
+    * ``dispersion="gene-batch"`` fits one ``px_r`` row per library and
+      ``batch_representation="embedding"`` one embedding row per library. With 902
+      libraries, almost every row sees no cell on a given rank and so receives no
+      gradient, which plain DDP treats as an error ("expected to have finished reduction
+      in the prior iteration"). The ``find_unused_parameters`` variant tolerates it.
+    * Under DDP scvi-tools switches ``SimpleLogger`` to writing history to disk with
+      ``save_dir`` defaulting to :func:`os.getcwd`, which would drop a ``lightning_logs/``
+      tree into the repository. ``log_save_dir`` sends it to scratch instead.
+
+    scvi-tools also disables early stopping under DDP (``scvi/train/_trainer.py``), so a
+    distributed run always uses all ``max_epochs``. That has a non-obvious consequence:
+    ``check_val_every_n_epoch`` is only defaulted to 1 when early stopping, checkpointing
+    or an LR monitor is active, and otherwise stays at ``sys.maxsize`` -- so a DDP run
+    would never validate and ``history`` would come back with no ``*_validation`` metrics
+    at all. It is requested explicitly here to keep the validation curves.
+    """
+    if devices <= 1:
+        return {}
+    log_save_dir.mkdir(parents=True, exist_ok=True)
+    return {
+        "strategy": DDP_STRATEGY,
+        "log_save_dir": str(log_save_dir),
+        "check_val_every_n_epoch": 1,
+    }
+
+
+def finish_distributed() -> bool:
+    """Synchronize, tear down the process group, and report whether this is rank 0.
+
+    Lightning's non-spawn DDP launcher re-executes the whole script once per GPU, so
+    without a guard every rank would run the post-training steps -- four processes racing
+    to write the same model, embedding and h5ad. Call this immediately after
+    ``model.train`` and return early when it is ``False``.
+    """
+    import torch.distributed as dist
+
+    rank = int(os.environ.get("RANK") or os.environ.get("LOCAL_RANK") or 0)
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()  # no rank leaves until all of them are done training
+        dist.destroy_process_group()
+    return rank == 0
 
 
 # ------------------------------------------------------------------- source files
@@ -290,6 +360,7 @@ class DrviConfig:
     early_stopping_patience: int = 20
     train_size: float = 0.9
     seed: int = 0
+    devices: int = 1
     vanished_threshold: float = 0.5
 
     def as_dict(self) -> dict:
@@ -312,6 +383,65 @@ class DrviConfig:
         }
 
 
+@dataclass(frozen=True)
+class ScviConfig:
+    """scVI hyperparameters, for the model the DRVI fit is compared against.
+
+    Mirrors :class:`DrviConfig` on every knob the two models share -- latent size,
+    architecture, batch handling, dispersion, schedule -- so that a difference between
+    the two embeddings is attributable to DRVI's split decoder rather than to the setup.
+    Two things cannot match:
+
+    * ``gene_likelihood``: ``"pnb"`` is DRVI's log-space negative binomial and
+      :class:`scvi.model.SCVI` does not accept it, so the plain ``"nb"`` is used.
+    * ``kl_warmup_epochs`` defaults to ``None``, meaning scvi's own warmup. DRVI needs the
+      KL ramped over the whole run for its split decoder to disentangle; forcing that on
+      plain scVI would make it a non-standard baseline. Set it to match if you want the
+      identical schedule.
+    """
+
+    n_latent: int = 64
+    n_hidden: int = 128
+    n_layers: int = 2
+    dropout_rate: float = 0.1
+    gene_likelihood: str = "nb"
+    dispersion: str = "gene-batch"
+    batch_representation: str = "embedding"
+    batch_key: str = "library_prep"
+    categorical_covariate_keys: tuple[str, ...] = ()
+    continuous_covariate_keys: tuple[str, ...] = field(default_factory=tuple)
+    encode_covariates: bool = False
+    batch_size: int = 256
+    max_epochs: int = 200
+    early_stopping_patience: int = 20
+    train_size: float = 0.9
+    seed: int = 0
+    devices: int = 1
+    kl_warmup_epochs: int | None = None
+    used_threshold: float = 0.5
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+    @property
+    def model_kwargs(self) -> dict:
+        """Kwargs for the :class:`scvi.model.SCVI` constructor.
+
+        ``batch_representation`` and ``encode_covariates`` are not named parameters of
+        ``SCVI.__init__``; they reach :class:`scvi.module.VAE` through its ``**kwargs``.
+        """
+        return {
+            "n_latent": self.n_latent,
+            "n_hidden": self.n_hidden,
+            "n_layers": self.n_layers,
+            "dropout_rate": self.dropout_rate,
+            "gene_likelihood": self.gene_likelihood,
+            "dispersion": self.dispersion,
+            "batch_representation": self.batch_representation,
+            "encode_covariates": self.encode_covariates,
+        }
+
+
 #: Suffix marking a covariate column this module derived, rather than one from the data.
 SCALED_SUFFIX = " [scaled]"
 
@@ -324,8 +454,13 @@ def scale_continuous_covariates(adata, keys: Sequence[str]) -> list[str]:
     the encoder/decoder would dominate every other input, so each column is log1p'd when
     it is count-like and then z-scored. Derived columns are suffixed with
     :data:`SCALED_SUFFIX`; the originals are left untouched.
+
+    What was done to each column is recorded in ``adata.uns["covariate_scaling"]`` -- the
+    ``log1p`` decision is data-dependent, so it cannot be recovered from the saved model
+    afterwards, and :func:`covariate_design` reports it only if handed this record.
     """
     names = []
+    scaling: dict[str, dict] = {}
     for key in keys:
         if key not in adata.obs:
             raise KeyError(f"obs column {key!r} not found")
@@ -343,6 +478,7 @@ def scale_continuous_covariates(adata, keys: Sequence[str]) -> list[str]:
         name = f"{key}{SCALED_SUFFIX}"
         adata.obs[name] = scaled
         names.append(name)
+        scaling[key] = {"log1p": bool(logged), "mean": float(mean), "std": float(std)}
         logger.info(
             "  covariate %-30s log1p=%-5s mean=%.4g std=%.4g -> z-scored%s",
             key,
@@ -351,10 +487,11 @@ def scale_continuous_covariates(adata, keys: Sequence[str]) -> list[str]:
             std,
             f", {n_missing} missing filled with 0" if n_missing else "",
         )
+    adata.uns["covariate_scaling"] = scaling
     return names
 
 
-def build_model(adata, cfg: DrviConfig):
+def build_drvi_model(adata, cfg: DrviConfig):
     """Register ``adata`` and construct the DRVI model.
 
     Counts live in ``adata.X`` (``layer=None``); the prepared file deliberately has no
@@ -372,15 +509,33 @@ def build_model(adata, cfg: DrviConfig):
     return DRVI(adata, **cfg.model_kwargs)
 
 
-def latent_embedding(model, adata, cfg: DrviConfig):
-    """AnnData of the latent space: cells x latent dimensions, obs carried over."""
+def build_scvi_model(adata, cfg: ScviConfig):
+    """Register ``adata`` and construct the scVI model, mirroring :func:`build_drvi_model`."""
+    from scvi.model import SCVI
+
+    SCVI.setup_anndata(
+        adata,
+        layer=None,
+        batch_key=cfg.batch_key,
+        categorical_covariate_keys=list(cfg.categorical_covariate_keys) or None,
+        continuous_covariate_keys=list(cfg.continuous_covariate_keys) or None,
+    )
+    return SCVI(adata, **cfg.model_kwargs)
+
+
+def latent_embedding(model, adata, cfg, prefix: str = "DR"):
+    """AnnData of the latent space: cells x latent dimensions, obs carried over.
+
+    ``prefix`` names the dimensions -- ``DR_n`` for DRVI factors, ``Z_n`` for scVI's,
+    which are not claimed to be independently interpretable.
+    """
     import anndata as ad
 
     latent = model.get_latent_representation(adata, batch_size=cfg.batch_size)
     # setup_anndata writes _scvi_* bookkeeping columns into obs; they are noise here.
     obs = adata.obs.drop(columns=[c for c in adata.obs.columns if c.startswith("_scvi")])
     embed = ad.AnnData(latent, obs=obs.copy())
-    embed.var_names = [f"DR_{i + 1}" for i in range(embed.n_vars)]
+    embed.var_names = [f"{prefix}_{i + 1}" for i in range(embed.n_vars)]
     return embed
 
 
@@ -395,14 +550,235 @@ def load_prepared(path: Path = PREPARED_SST, backed: bool | str = "r"):
     return ad.read_h5ad(path, backed=backed) if backed else ad.read_h5ad(path)
 
 
-def load_embedding(n_latent: int = 64, include_chodl: bool = False):
-    """Load the latent AnnData written by ``train_drvi.py``."""
+def load_embedding(n_latent: int = 64, include_chodl: bool = False, model: str = "drvi"):
+    """Load the latent AnnData written by ``train_drvi.py`` / ``train_scvi.py``."""
     import anndata as ad
 
-    path = embed_path(n_latent, include_chodl)
+    path = embed_path(n_latent, include_chodl, model)
     if not path.exists():
-        raise FileNotFoundError(f"{path} missing; run train_drvi.py first")
+        raise FileNotFoundError(f"{path} missing; run train_{model}.py first")
     return ad.read_h5ad(path)
+
+
+# ----------------------------------------------------------------- saved artifacts
+#
+# Everything the QC notebook needs to know about a fit -- its design, its training
+# history, which covariates it was given -- is inside the saved ``model.pt``. Reading it
+# directly means the notebook needs neither the 2.3 GB cohort nor a GPU, and it works on
+# runs that finished long ago.
+
+def _as_list(value) -> list:
+    """Registry entries are sometimes numpy arrays, whose truthiness raises."""
+    return [] if value is None else list(value)
+
+
+def _model_file(model_path: Path | str) -> Path:
+    path = Path(model_path)
+    return path / "model.pt" if path.is_dir() else path
+
+
+def _load_saved(model_path: Path | str) -> dict:
+    """``torch.load`` a saved scvi-tools model without constructing the model."""
+    import torch
+
+    path = _model_file(model_path)
+    if not path.exists():
+        raise FileNotFoundError(f"{path} missing; train the model first")
+    return torch.load(path, map_location="cpu", weights_only=False)
+
+
+def load_history(model_path: Path | str) -> pd.DataFrame:
+    """Epochs x metrics training history, read out of a saved model.
+
+    scvi-tools keeps every logged loss component in ``attr_dict["history_"]`` -- ELBO,
+    reconstruction loss, the KL terms and the warmup weight, train and validation each --
+    so the loss curves need no retraining and no reload of the module.
+    """
+    history = _load_saved(model_path)["attr_dict"].get("history_") or {}
+    if not history:
+        raise ValueError(f"{_model_file(model_path)} has no training history")
+    out = pd.concat(history.values(), axis=1, join="outer")
+    out.index.name = "epoch"
+    return out.sort_index()
+
+
+def model_design(model_path: Path | str) -> dict:
+    """What a saved model is: constructor arguments, registry, size and how far it trained."""
+    saved = _load_saved(model_path)
+    attrs = saved["attr_dict"]
+    registry = attrs["registry_"]
+
+    init = dict(attrs["init_params_"].get("non_kwargs") or {})
+    # both SCVI and DRVI funnel the module-level knobs through a nested "kwargs" entry
+    init.update((attrs["init_params_"].get("kwargs") or {}).get("kwargs") or {})
+
+    stats: dict = {}
+    for field in registry["field_registries"].values():
+        stats.update(field.get("summary_stats") or {})
+
+    n_params: dict[str, int] = {}
+    for key, tensor in saved["model_state_dict"].items():
+        if hasattr(tensor, "numel"):
+            head = key.split(".")[0]
+            n_params[head] = n_params.get(head, 0) + tensor.numel()
+
+    history = attrs.get("history_") or {}
+    return {
+        "model": registry.get("model_name"),
+        "scvi_version": registry.get("scvi_version"),
+        "setup_args": dict(registry.get("setup_args") or {}),
+        "field_registries": registry["field_registries"],
+        "init_params": init,
+        "summary_stats": stats,
+        "n_params": n_params,
+        "n_params_total": sum(n_params.values()),
+        "epochs_run": len(history.get("elbo_train", ())),
+        "is_trained": bool(attrs.get("is_trained_", False)),
+        # these are numpy arrays, so `or ()` would raise on the ambiguous truth value
+        "n_train": 0 if attrs.get("train_indices_") is None else len(attrs["train_indices_"]),
+        "n_validation": (
+            0
+            if attrs.get("validation_indices_") is None
+            else len(attrs["validation_indices_"])
+        ),
+    }
+
+
+def design_table(designs: dict[str, Path | str]) -> pd.DataFrame:
+    """Side-by-side model design, one column per named model.
+
+    Rows that do not apply to a model come back as ``None`` -- ``split_method`` is DRVI's
+    alone, for instance -- so the table doubles as a record of where the two differ.
+    """
+    columns = {}
+    for name, path in designs.items():
+        d = model_design(path)
+        init, stats, setup = d["init_params"], d["summary_stats"], d["setup_args"]
+        columns[name] = {
+            "model": d["model"],
+            "scvi-tools": d["scvi_version"],
+            "n_latent": init.get("n_latent"),
+            "n_hidden": init.get("n_hidden"),
+            "n_layers": init.get("n_layers"),
+            "gene_likelihood": init.get("gene_likelihood"),
+            "dispersion": init.get("dispersion"),
+            "batch_representation": init.get("batch_representation"),
+            "encode_covariates": init.get("encode_covariates"),
+            "split_method": init.get("split_method"),
+            "split_aggregation": init.get("split_aggregation"),
+            "batch_key": setup.get("batch_key"),
+            "n_batch": stats.get("n_batch"),
+            "n_extra_categorical_covs": stats.get("n_extra_categorical_covs"),
+            "n_extra_continuous_covs": stats.get("n_extra_continuous_covs"),
+            "n_cells": d["n_train"] + d["n_validation"],
+            "n_genes": stats.get("n_vars"),
+            "epochs_run": d["epochs_run"],
+            "parameters": f"{d['n_params_total']:,}",
+        }
+    return pd.DataFrame(columns)
+
+
+def covariate_design(
+    model_path: Path | str,
+    tested: Sequence[str],
+    scaling: dict | None = None,
+) -> pd.DataFrame:
+    """How each covariate in ``tested`` enters the model -- including the ones that do not.
+
+    The ``not modelled`` rows are the point of this table. A covariate the model was never
+    told about, which then explains much of a latent dimension, means a dimension was
+    spent on nuisance structure; a covariate marked ``batch key`` that still scores high
+    means structure leaked past the correction. Read it beside :func:`factor_association`.
+
+    ``tested`` should be the same covariate list the association test uses, so nothing
+    that gets scored is missing from the table. Pass ``scaling`` --
+    ``embed.uns["covariate_scaling"]``, written by :func:`scale_continuous_covariates` --
+    to report whether a continuous covariate was log1p'd as well as z-scored; without it
+    the transform is reported as the generic "standardized".
+    """
+    scaling = scaling or {}
+    d = model_design(model_path)
+    setup, stats, fields = d["setup_args"], d["summary_stats"], d["field_registries"]
+    init = d["init_params"]
+
+    batch_key = setup.get("batch_key")
+    cat_state = (fields.get("extra_categorical_covs") or {}).get("state_registry") or {}
+    cat_levels = dict(
+        zip(
+            _as_list(cat_state.get("field_keys")),
+            _as_list(cat_state.get("n_cats_per_key")),
+            strict=False,
+        )
+    )
+    cont_state = (fields.get("extra_continuous_covs") or {}).get("state_registry") or {}
+    # continuous covariates are registered on the derived, standardized columns
+    cont_keys = {
+        str(col).removesuffix(SCALED_SUFFIX): str(col).endswith(SCALED_SUFFIX)
+        for col in _as_list(cont_state.get("columns"))
+    }
+    encoded = bool(init.get("encode_covariates"))
+
+    rows = []
+    for name in tested:
+        if name == batch_key:
+            role, representation = "batch key", init.get("batch_representation", "one-hot")
+            levels = stats.get("n_batch")
+        elif name in cat_levels:
+            role, representation = "categorical covariate", "one-hot"
+            levels = cat_levels[name]
+        elif name in cont_keys:
+            role = "continuous covariate"
+            if not cont_keys[name]:
+                representation = "as given"
+            elif name in scaling:
+                representation = (
+                    "log1p + z-scored" if scaling[name].get("log1p") else "z-scored"
+                )
+            else:
+                representation = "standardized"
+            levels = None
+        else:
+            role, representation, levels = "not modelled", "-", None
+        modelled = role != "not modelled"
+        rows.append(
+            {
+                "role": role,
+                "representation": representation,
+                "n_levels": levels,
+                "reaches_encoder": encoded if modelled else False,
+                "reaches_decoder": modelled,
+                "affects_dispersion": role == "batch key"
+                and init.get("dispersion") == "gene-batch",
+            }
+        )
+    return pd.DataFrame(rows, index=pd.Index(list(tested), name="covariate"))
+
+
+def latent_stats(embed, threshold: float = 0.5) -> pd.DataFrame:
+    """Per-dimension usage statistics that a DRVI *or* an scVI embedding supports.
+
+    DRVI prunes dimensions it does not need and flags them itself, in
+    ``var["vanished"]`` written by ``set_latent_dimension_stats``. scVI has no such
+    notion, so the only way to compare how much of ``n_latent`` each model actually used
+    is a shared rule: a dimension counts as used when some cell drives it past
+    ``threshold`` in absolute value. Where DRVI's own flag is present it is carried
+    through, so the two can be checked against each other rather than trusted blindly.
+    """
+    x = np.asarray(embed.X, dtype=np.float32)
+    stats = pd.DataFrame(
+        {
+            "std": x.std(axis=0),
+            "mean_abs": np.abs(x).mean(axis=0),
+            "max_abs": np.abs(x).max(axis=0),
+        },
+        index=embed.var_names,
+    )
+    stats["used"] = stats["max_abs"] >= threshold
+    if "vanished" in embed.var:
+        stats["vanished"] = embed.var["vanished"].to_numpy()
+    if "title" in embed.var:
+        stats.insert(0, "title", embed.var["title"].to_numpy())
+    return stats
 
 
 # ------------------------------------------------------------------ interpretation
@@ -673,7 +1049,34 @@ def factor_association(
             split.to_numpy(), split.columns, embed.obs, categorical, continuous
         )
 
-    used = embed.var.sort_values("order")
-    used = used[~used["vanished"]]
-    x = np.asarray(embed[:, used.index].X)
-    return _associate(x, used["title"].to_numpy(), embed.obs, categorical, continuous)
+    if {"order", "vanished", "title"} <= set(embed.var.columns):
+        used = embed.var.sort_values("order")
+        used = used[~used["vanished"]]
+        x = np.asarray(embed[:, used.index].X)
+        names = used["title"].to_numpy()
+    else:
+        # An scVI embedding has no vanished/order bookkeeping to reorder by, but it does
+        # carry `used` from latent_stats -- and collapsed dimensions MUST be dropped here.
+        # Eta-squared is a variance ratio, so it is scale-invariant and cannot tell a live
+        # dimension from one sitting at the prior: a dimension with std 0.008 that wiggles
+        # slightly with library scores just as high as a real one, which fills the heatmap
+        # with noise that reads as signal.
+        keep = embed.var.index
+        if "used" in embed.var:
+            keep = embed.var.index[embed.var["used"].to_numpy().astype(bool)]
+            dropped = embed.n_vars - len(keep)
+            if dropped:
+                logger.info(
+                    "dropping %d of %d collapsed latent dimensions (var['used'] is False); "
+                    "eta-squared is scale-invariant and would score them like live ones",
+                    dropped,
+                    embed.n_vars,
+                )
+        subset = embed[:, keep]
+        x = np.asarray(subset.X)
+        names = (
+            subset.var["title"].to_numpy()
+            if "title" in subset.var
+            else subset.var_names.to_numpy()
+        )
+    return _associate(x, names, embed.obs, categorical, continuous)
