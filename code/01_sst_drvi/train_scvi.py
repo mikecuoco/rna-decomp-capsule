@@ -67,9 +67,22 @@ def parse_args() -> argparse.Namespace:
         "--kl-warmup-epochs",
         type=int,
         default=cfg.kl_warmup_epochs,
-        help="spread the KL warmup over this many epochs. Unset uses scvi's own warmup; "
-        "pass --max-epochs' value to match the DRVI runs exactly (DRVI needs the long "
-        "warmup to disentangle, plain scVI does not)",
+        help="epochs over which to ramp the KL weight to 1.0. Unset uses a third of "
+        "--max-epochs, the same rule as train_drvi.py, so the two families optimise the "
+        "same objective and their ELBOs are comparable. Do not fall back to scvi's own "
+        "400-epoch default: against a shorter run it caps the weight below 1.0",
+    )
+    p.add_argument("--lr", type=float, default=cfg.lr, help="Adam learning rate")
+    p.add_argument(
+        "--precision",
+        default=cfg.precision,
+        help="Lightning precision, e.g. 16-mixed",
+    )
+    p.add_argument(
+        "--reduce-lr-on-plateau",
+        action="store_true",
+        help="halve the learning rate when elbo_validation stops improving; unlike early "
+        "stopping this survives DDP",
     )
     p.add_argument(
         "--continuous-covariates",
@@ -136,7 +149,13 @@ def main() -> None:
         gene_likelihood=args.gene_likelihood,
         seed=args.seed,
         devices=args.devices,
-        kl_warmup_epochs=SMOKE_EPOCHS if args.smoke and args.kl_warmup_epochs else args.kl_warmup_epochs,
+        lr=args.lr,
+        # A smoke run keeps the default rule (a third of the budget) rather than being
+        # pinned to its own epoch count, so it exercises the path where the ramp finishes
+        # and the kl_weight guard passes.
+        kl_warmup_epochs=args.kl_warmup_epochs,
+        reduce_lr_on_plateau=args.reduce_lr_on_plateau,
+        precision=args.precision,
         categorical_covariate_keys=tuple(args.categorical_covariates),
         continuous_covariate_keys=tuple(args.continuous_covariates),
         encode_covariates=args.encode_covariates,
@@ -179,10 +198,11 @@ def main() -> None:
     )
     logger.info("config: %s", json.dumps(cfg.as_dict()))
     logger.info(
-        "devices=%d batch_size=%d per device -> effective batch %d",
+        "devices=%d batch_size=%d per device -> effective batch %d, %d optimizer steps/epoch",
         cfg.devices,
         cfg.batch_size,
         cfg.batch_size * cfg.devices,
+        int(adata.n_obs * cfg.train_size) // (cfg.batch_size * cfg.devices),
     )
 
     # --------------------------------------------------------------------- train
@@ -200,8 +220,14 @@ def main() -> None:
     if ddp:
         logger.info("DDP: %s (early stopping unavailable, running all %d epochs)",
                     ddp["strategy"], cfg.max_epochs)
-    plan_kwargs = (
-        {"n_epochs_kl_warmup": cfg.kl_warmup_epochs} if cfg.kl_warmup_epochs else {}
+    plan = S.plan_kwargs(cfg)
+    logger.info(
+        "lr=%g KL warmup=%d of %d epochs (%d at kl_weight=1.0) precision=%s",
+        cfg.lr,
+        plan["n_epochs_kl_warmup"],
+        cfg.max_epochs,
+        max(cfg.max_epochs - plan["n_epochs_kl_warmup"], 0),
+        cfg.precision or "32-true",
     )
     t = time.perf_counter()
     model.train(
@@ -211,7 +237,7 @@ def main() -> None:
         early_stopping=not ddp,
         early_stopping_patience=cfg.early_stopping_patience,
         early_stopping_monitor="elbo_validation",
-        plan_kwargs=plan_kwargs,
+        plan_kwargs=plan,
         accelerator=accelerator,
         devices=cfg.devices,
         datasplitter_kwargs={
@@ -219,6 +245,7 @@ def main() -> None:
             "persistent_workers": args.num_workers > 0,
         },
         **ddp,
+        **S.precision_kwargs(cfg.precision),
     )
     timings["train_min"] = (time.perf_counter() - t) / 60
 
@@ -243,6 +270,9 @@ def main() -> None:
     # too, and concatenating whatever is present cannot fail late in a long run.
     history = pd.concat(model.history.values(), axis=1)
     history.to_csv(model_path.parent / "history_scvi.csv")
+    timings["kl_weight_reached"] = S.check_kl_schedule(
+        history, plan["n_epochs_kl_warmup"], cfg.max_epochs
+    )
     logger.info("history metrics: %s", list(history.columns))
     logger.info("saved model -> %s", model_path)
 
@@ -301,6 +331,9 @@ def main() -> None:
     out_embed.parent.mkdir(parents=True, exist_ok=True)
     embed.write_h5ad(out_embed, compression="gzip")
     logger.info("wrote %s (%.2f GB)", out_embed, out_embed.stat().st_size / 1e9)
+    # on disk as well as in the log: the four DDP ranks share one log file and can clobber
+    # each other's lines
+    (model_path.parent / "timings.json").write_text(json.dumps(timings, indent=2))
     logger.info("timings: %s", {k: (round(v, 2) if isinstance(v, float) else v) for k, v in timings.items()})
 
 

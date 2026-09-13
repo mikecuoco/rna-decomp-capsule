@@ -45,6 +45,29 @@ def parse_args() -> argparse.Namespace:
         choices=["gene", "gene-batch", "gene-label", "gene-cell"],
     )
     p.add_argument("--seed", type=int, default=cfg.seed)
+    p.add_argument("--lr", type=float, default=cfg.lr, help="Adam learning rate")
+    p.add_argument(
+        "--kl-warmup-epochs",
+        type=int,
+        default=cfg.kl_warmup_epochs,
+        help="epochs over which to ramp the KL weight to 1.0. Unset uses a third of "
+        "--max-epochs, which leaves two thirds of the run at a settled objective. DRVI's "
+        "own default ('auto') ramps over the whole run, so it never reaches a state whose "
+        "convergence can be judged",
+    )
+    p.add_argument(
+        "--precision",
+        default=cfg.precision,
+        help="Lightning precision, e.g. 16-mixed. On a T4 the tensor cores are ~8x the "
+        "fp32 peak and fp16 halves the (batch, n_split, n_genes) decoder intermediate, "
+        "but the logsumexp over a log-space NB can overflow -- check px_r_finite",
+    )
+    p.add_argument(
+        "--reduce-lr-on-plateau",
+        action="store_true",
+        help="halve the learning rate when elbo_validation stops improving. Unlike early "
+        "stopping this survives DDP, so it is the only way a distributed run adapts",
+    )
     p.add_argument(
         "--devices",
         type=int,
@@ -105,6 +128,13 @@ def parse_args() -> argparse.Namespace:
         help=f"subsample to {SMOKE_CELLS} cells and {SMOKE_EPOCHS} epochs to validate "
         "the full path quickly; writes to a *_smoke run name",
     )
+    p.add_argument(
+        "--train-only",
+        action="store_true",
+        help="stop after the model and loss history are written, skipping the embedding, "
+        "interpretability scores and UMAP (~11 min on the full cohort). For runs whose "
+        "only product is the loss curves, such as a batch/LR probe",
+    )
     p.add_argument("--force", action="store_true", help="retrain even if the embedding exists")
     return p.parse_args()
 
@@ -120,6 +150,13 @@ def main() -> None:
         dispersion=args.dispersion,
         seed=args.seed,
         devices=args.devices,
+        lr=args.lr,
+        # A smoke run keeps the default rule (a third of the budget) rather than being
+        # pinned to its own epoch count, so it exercises the path where the ramp finishes
+        # and the kl_weight guard passes.
+        kl_warmup_epochs=args.kl_warmup_epochs,
+        reduce_lr_on_plateau=args.reduce_lr_on_plateau,
+        precision=args.precision,
         categorical_covariate_keys=tuple(args.categorical_covariates),
         continuous_covariate_keys=tuple(args.continuous_covariates),
         encode_covariates=args.encode_covariates,
@@ -134,7 +171,7 @@ def main() -> None:
     out_embed = S.EMBED_DIR / f"{run}_drvi_embed.h5ad"
 
     S.setup_logging(S.LOGS_DIR / f"train_{run}.log")
-    if out_embed.exists() and not args.force:
+    if out_embed.exists() and not args.force and not args.train_only:
         logger.info("embedding exists, skipping: %s (use --force)", out_embed)
         return
 
@@ -162,10 +199,20 @@ def main() -> None:
     )
     logger.info("config: %s", json.dumps(cfg.as_dict()))
     logger.info(
-        "devices=%d batch_size=%d per device -> effective batch %d",
+        "devices=%d batch_size=%d per device -> effective batch %d, %d optimizer steps/epoch",
         cfg.devices,
         cfg.batch_size,
         cfg.batch_size * cfg.devices,
+        int(adata.n_obs * cfg.train_size) // (cfg.batch_size * cfg.devices),
+    )
+    plan = S.plan_kwargs(cfg)
+    logger.info(
+        "lr=%g KL warmup=%d of %d epochs (%d at kl_weight=1.0) precision=%s",
+        cfg.lr,
+        plan["n_epochs_kl_warmup"],
+        cfg.max_epochs,
+        max(cfg.max_epochs - plan["n_epochs_kl_warmup"], 0),
+        cfg.precision or "32-true",
     )
 
     # --------------------------------------------------------------------- train
@@ -193,9 +240,9 @@ def main() -> None:
         early_stopping=not ddp,
         early_stopping_patience=cfg.early_stopping_patience,
         early_stopping_monitor="elbo_validation",
-        # DRVI wants the KL warmup spread over the whole run; a short warmup collapses
-        # the disentanglement the split decoder is meant to produce.
-        plan_kwargs={"n_epochs_kl_warmup": cfg.max_epochs},
+        # Shared with train_scvi.py so the two families cannot drift onto different KL
+        # schedules; see S.resolve_kl_warmup for why that matters.
+        plan_kwargs=plan,
         accelerator=accelerator,
         devices=cfg.devices,
         datasplitter_kwargs={
@@ -203,6 +250,7 @@ def main() -> None:
             "persistent_workers": args.num_workers > 0,
         },
         **ddp,
+        **S.precision_kwargs(cfg.precision),
     )
     timings["train_min"] = (time.perf_counter() - t) / 60
 
@@ -212,6 +260,18 @@ def main() -> None:
         logger.info("rank %s done training; rank 0 handles the rest",
                     os.environ.get("LOCAL_RANK"))
         return
+
+    def save_timings() -> None:
+        """Persist timings beside the model and log them.
+
+        On disk as well as in the log because the four DDP ranks share one log file and
+        can clobber each other's lines, and because a ``--train-only`` run writes no
+        embedding whose ``uns`` would otherwise carry them.
+        """
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        (model_path.parent / "timings.json").write_text(json.dumps(timings, indent=2))
+        logger.info("timings: %s", {k: (round(v, 2) if isinstance(v, float) else v)
+                                    for k, v in timings.items()})
 
     n_epochs_run = len(model.history["elbo_train"])
     logger.info(
@@ -228,6 +288,9 @@ def main() -> None:
     history = pd.concat(model.history.values(), axis=1)
     history.to_csv(model_path.parent / "history.csv")
     logger.info("history metrics: %s", list(history.columns))
+    timings["kl_weight_reached"] = S.check_kl_schedule(
+        history, plan["n_epochs_kl_warmup"], cfg.max_epochs
+    )
     logger.info("saved model -> %s", model_path)
 
     # `dispersion="gene-batch"` fits one dispersion per gene per library. With ~600
@@ -241,6 +304,14 @@ def main() -> None:
             "px_r contains non-finite values -- retrain with --dispersion gene before "
             "trusting the interpretability scores"
         )
+
+    if args.train_only:
+        logger.info(
+            "--train-only: stopping after %d epochs of history; no embedding written",
+            n_epochs_run,
+        )
+        save_timings()
+        return
 
     # ------------------------------------------------------------------ embedding
     t = time.perf_counter()
@@ -290,7 +361,7 @@ def main() -> None:
     out_embed.parent.mkdir(parents=True, exist_ok=True)
     embed.write_h5ad(out_embed, compression="gzip")
     logger.info("wrote %s (%.2f GB)", out_embed, out_embed.stat().st_size / 1e9)
-    logger.info("timings: %s", {k: (round(v, 2) if isinstance(v, float) else v) for k, v in timings.items()})
+    save_timings()
 
 
 if __name__ == "__main__":

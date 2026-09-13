@@ -21,6 +21,8 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from collections import Counter
+
 import h5py
 import numpy as np
 import pandas as pd
@@ -53,15 +55,6 @@ def run_name(n_latent: int, include_chodl: bool = False) -> str:
     return f"{scope}_k{n_latent}"
 
 
-def run_paths(run: str, model: str = "drvi") -> tuple[Path, Path]:
-    """``(model directory, embedding path)`` for a run name.
-
-    Takes the run name directly, so it also addresses suffixed runs such as
-    ``sst_k64_covar`` that :func:`run_name` does not construct.
-    """
-    return MODELS_DIR / run / model, EMBED_DIR / f"{run}_{model}_embed.h5ad"
-
-
 def model_dir(n_latent: int, include_chodl: bool = False, model: str = "drvi") -> Path:
     """Directory one trained model was saved into. ``model`` is ``"drvi"`` or ``"scvi"``."""
     return MODELS_DIR / run_name(n_latent, include_chodl) / model
@@ -75,9 +68,18 @@ def embed_path(n_latent: int, include_chodl: bool = False, model: str = "drvi") 
 # ------------------------------------------------------------------------ logging
 
 def setup_logging(log_file: Path | None = None, level: int = logging.INFO) -> None:
-    """Configure root logging: stream to stdout, optionally tee to ``log_file``."""
+    """Configure root logging: stream to stdout, optionally tee to ``log_file``.
+
+    Under non-spawn DDP every rank re-executes the script, so all of them would open the
+    same file in ``mode="w"`` and write at colliding offsets -- which silently ate a line
+    of rank 0's output in an early probe run. Ranks above zero get their own suffixed
+    file instead, leaving the named log as rank 0's clean record.
+    """
     handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
     if log_file is not None:
+        rank = int(os.environ.get("LOCAL_RANK") or os.environ.get("RANK") or 0)
+        if rank:
+            log_file = log_file.with_suffix(f".rank{rank}{log_file.suffix}")
         log_file.parent.mkdir(parents=True, exist_ok=True)
         handlers.append(logging.FileHandler(log_file, mode="w"))
     logging.basicConfig(
@@ -153,6 +155,92 @@ def ddp_trainer_kwargs(devices: int, log_save_dir: Path = LIGHTNING_LOGS) -> dic
         "log_save_dir": str(log_save_dir),
         "check_val_every_n_epoch": 1,
     }
+
+
+def precision_kwargs(precision: str | None) -> dict:
+    """``{"precision": ...}`` when a non-default precision is requested, else empty.
+
+    Kept separate from :func:`ddp_trainer_kwargs` because precision applies to
+    single-GPU runs too, and because the runners test that function's return value for
+    truthiness to decide whether early stopping is available -- folding an unrelated key
+    into it would silently disable early stopping on one GPU.
+
+    ``precision`` is not a named parameter of scvi-tools' ``Trainer``; it reaches
+    Lightning through its ``**kwargs`` (``scvi/train/_trainer.py``). ``"16-mixed"`` is
+    the interesting value on a T4, whose tensor cores are roughly 8x its fp32 peak and
+    which has no bf16 support. Worth measuring rather than assuming: DRVI aggregates its
+    split decoder with ``logsumexp`` over a log-space negative binomial, and fp16 can
+    lose that to overflow.
+    """
+    return {"precision": precision} if precision else {}
+
+
+def resolve_kl_warmup(cfg) -> int:
+    """Epochs over which to ramp the KL weight, for either model family.
+
+    Defaults to a third of the run, leaving two thirds at ``kl_weight = 1.0``. Both the
+    ramp length and the fact that it is the *same* for DRVI and scVI matter:
+
+    * A model still annealing its objective on the final epoch has no converged state to
+      measure, so "still falling" cannot be separated from "the loss it is minimising is
+      still changing". :class:`scvi.external.drvi.DRVITrainingPlan` defaults to
+      ``n_epochs_kl_warmup="auto"``, which is ``max_epochs`` -- a longer budget would
+      stretch the ramp with it and never settle.
+    * Left to their own defaults the two families diverge. scvi-tools' plain
+      ``TrainingPlan`` uses ``n_epochs_kl_warmup=400``, so a 200-epoch scVI run peaks at
+      a KL weight of 0.5 and minimises ``recon + 0.5 * KL`` throughout, while DRVI
+      reaches ~1.0. Both then report a comparably defined ELBO
+      (``elbo = rec_loss + kl_local + kl_global / n``) obtained from different objectives,
+      and the weaker penalty simply buys the better reconstruction.
+    """
+    if cfg.kl_warmup_epochs is not None:
+        return int(cfg.kl_warmup_epochs)
+    return max(int(cfg.max_epochs) // 3, 1)
+
+
+def plan_kwargs(cfg) -> dict:
+    """``plan_kwargs`` for ``model.train``, identical in shape for DRVI and scVI.
+
+    Both runners go through here so the KL schedule and optimiser settings cannot drift
+    apart between the two model families -- see :func:`resolve_kl_warmup`.
+    """
+    kwargs = {"lr": cfg.lr, "n_epochs_kl_warmup": resolve_kl_warmup(cfg)}
+    if cfg.reduce_lr_on_plateau:
+        # A plateau scheduler is a scheduler, not a callback, so unlike early stopping it
+        # survives DDP. It monitors the validation ELBO, which requires
+        # ``check_val_every_n_epoch`` to be set -- see :func:`ddp_trainer_kwargs`.
+        kwargs.update(
+            reduce_lr_on_plateau=True,
+            lr_patience=cfg.lr_patience,
+            lr_factor=cfg.lr_factor,
+            lr_scheduler_metric="elbo_validation",
+        )
+    return kwargs
+
+
+def check_kl_schedule(history: pd.DataFrame, warmup: int, max_epochs: int) -> float:
+    """Log whether the KL ramp finished, and return the weight actually reached.
+
+    A run whose ``kl_weight`` never reaches 1.0 optimised a down-weighted KL for its whole
+    length, which inflates its reconstruction and makes its ELBO incomparable to a run
+    that did reach 1.0 -- even though both report the same quantity. That happened here
+    once already (see :class:`ScviConfig`) and was only noticed while interpreting the
+    results, so it is checked automatically now rather than trusted.
+    """
+    if "kl_weight" not in history:
+        logger.warning("history has no kl_weight column; cannot verify the KL schedule")
+        return float("nan")
+    reached = float(pd.to_numeric(history["kl_weight"], errors="coerce").max())
+    if reached < 0.99:
+        logger.error(
+            "KL weight only reached %.4f: warmup=%d epochs vs max_epochs=%d, so the model "
+            "minimised a down-weighted KL throughout and its ELBO is not comparable to a "
+            "fully warmed-up run",
+            reached, warmup, max_epochs,
+        )
+    else:
+        logger.info("KL weight reached %.4f over a %d-epoch warmup", reached, warmup)
+    return reached
 
 
 def finish_distributed() -> bool:
@@ -357,6 +445,12 @@ class DrviConfig:
     encode_covariates: bool = False
     batch_size: int = 256
     max_epochs: int = 200
+    lr: float = 1e-3
+    kl_warmup_epochs: int | None = None
+    reduce_lr_on_plateau: bool = False
+    lr_patience: int = 15
+    lr_factor: float = 0.5
+    precision: str | None = None
     early_stopping_patience: int = 20
     train_size: float = 0.9
     seed: int = 0
@@ -394,10 +488,15 @@ class ScviConfig:
 
     * ``gene_likelihood``: ``"pnb"`` is DRVI's log-space negative binomial and
       :class:`scvi.model.SCVI` does not accept it, so the plain ``"nb"`` is used.
-    * ``kl_warmup_epochs`` defaults to ``None``, meaning scvi's own warmup. DRVI needs the
-      KL ramped over the whole run for its split decoder to disentangle; forcing that on
-      plain scVI would make it a non-standard baseline. Set it to match if you want the
-      identical schedule.
+    ``kl_warmup_epochs`` used to default to scvi's own warmup here, on the reasoning that
+    DRVI's whole-run ramp is specific to its split decoder and imposing it would make this
+    a non-standard baseline. That was a mistake: scvi's default is 400 epochs, so a
+    200-epoch run peaked at a KL weight of 0.4975 and this model minimised
+    ``recon + 0.5 * KL`` from start to finish while the DRVI fits reached ~1.0. Both still
+    report an identically defined ELBO, so the two numbers invite a comparison that the
+    schedules do not support -- the weaker penalty buys the better reconstruction. The
+    warmup now resolves through :func:`resolve_kl_warmup`, shared with :class:`DrviConfig`,
+    and the runners refuse to stay quiet if the weight does not reach 1.0.
     """
 
     n_latent: int = 64
@@ -413,11 +512,16 @@ class ScviConfig:
     encode_covariates: bool = False
     batch_size: int = 256
     max_epochs: int = 200
+    lr: float = 1e-3
+    kl_warmup_epochs: int | None = None
+    reduce_lr_on_plateau: bool = False
+    lr_patience: int = 15
+    lr_factor: float = 0.5
+    precision: str | None = None
     early_stopping_patience: int = 20
     train_size: float = 0.9
     seed: int = 0
     devices: int = 1
-    kl_warmup_epochs: int | None = None
     used_threshold: float = 0.5
 
     def as_dict(self) -> dict:
@@ -457,7 +561,8 @@ def scale_continuous_covariates(adata, keys: Sequence[str]) -> list[str]:
 
     What was done to each column is recorded in ``adata.uns["covariate_scaling"]`` -- the
     ``log1p`` decision is data-dependent, so it cannot be recovered from the saved model
-    afterwards, and :func:`covariate_design` reports it only if handed this record.
+    afterwards, and the covariate table in ``01_qc.ipynb`` reports it only if handed this
+    record.
     """
     names = []
     scaling: dict[str, dict] = {}
@@ -567,192 +672,6 @@ def load_embedding(n_latent: int = 64, include_chodl: bool = False, model: str =
 # directly means the notebook needs neither the 2.3 GB cohort nor a GPU, and it works on
 # runs that finished long ago.
 
-def _as_list(value) -> list:
-    """Registry entries are sometimes numpy arrays, whose truthiness raises."""
-    return [] if value is None else list(value)
-
-
-def _model_file(model_path: Path | str) -> Path:
-    path = Path(model_path)
-    return path / "model.pt" if path.is_dir() else path
-
-
-def _load_saved(model_path: Path | str) -> dict:
-    """``torch.load`` a saved scvi-tools model without constructing the model."""
-    import torch
-
-    path = _model_file(model_path)
-    if not path.exists():
-        raise FileNotFoundError(f"{path} missing; train the model first")
-    return torch.load(path, map_location="cpu", weights_only=False)
-
-
-def load_history(model_path: Path | str) -> pd.DataFrame:
-    """Epochs x metrics training history, read out of a saved model.
-
-    scvi-tools keeps every logged loss component in ``attr_dict["history_"]`` -- ELBO,
-    reconstruction loss, the KL terms and the warmup weight, train and validation each --
-    so the loss curves need no retraining and no reload of the module.
-    """
-    history = _load_saved(model_path)["attr_dict"].get("history_") or {}
-    if not history:
-        raise ValueError(f"{_model_file(model_path)} has no training history")
-    out = pd.concat(history.values(), axis=1, join="outer")
-    out.index.name = "epoch"
-    return out.sort_index()
-
-
-def model_design(model_path: Path | str) -> dict:
-    """What a saved model is: constructor arguments, registry, size and how far it trained."""
-    saved = _load_saved(model_path)
-    attrs = saved["attr_dict"]
-    registry = attrs["registry_"]
-
-    init = dict(attrs["init_params_"].get("non_kwargs") or {})
-    # both SCVI and DRVI funnel the module-level knobs through a nested "kwargs" entry
-    init.update((attrs["init_params_"].get("kwargs") or {}).get("kwargs") or {})
-
-    stats: dict = {}
-    for field in registry["field_registries"].values():
-        stats.update(field.get("summary_stats") or {})
-
-    n_params: dict[str, int] = {}
-    for key, tensor in saved["model_state_dict"].items():
-        if hasattr(tensor, "numel"):
-            head = key.split(".")[0]
-            n_params[head] = n_params.get(head, 0) + tensor.numel()
-
-    history = attrs.get("history_") or {}
-    return {
-        "model": registry.get("model_name"),
-        "scvi_version": registry.get("scvi_version"),
-        "setup_args": dict(registry.get("setup_args") or {}),
-        "field_registries": registry["field_registries"],
-        "init_params": init,
-        "summary_stats": stats,
-        "n_params": n_params,
-        "n_params_total": sum(n_params.values()),
-        "epochs_run": len(history.get("elbo_train", ())),
-        "is_trained": bool(attrs.get("is_trained_", False)),
-        # these are numpy arrays, so `or ()` would raise on the ambiguous truth value
-        "n_train": 0 if attrs.get("train_indices_") is None else len(attrs["train_indices_"]),
-        "n_validation": (
-            0
-            if attrs.get("validation_indices_") is None
-            else len(attrs["validation_indices_"])
-        ),
-    }
-
-
-def design_table(designs: dict[str, Path | str]) -> pd.DataFrame:
-    """Side-by-side model design, one column per named model.
-
-    Rows that do not apply to a model come back as ``None`` -- ``split_method`` is DRVI's
-    alone, for instance -- so the table doubles as a record of where the two differ.
-    """
-    columns = {}
-    for name, path in designs.items():
-        d = model_design(path)
-        init, stats, setup = d["init_params"], d["summary_stats"], d["setup_args"]
-        columns[name] = {
-            "model": d["model"],
-            "scvi-tools": d["scvi_version"],
-            "n_latent": init.get("n_latent"),
-            "n_hidden": init.get("n_hidden"),
-            "n_layers": init.get("n_layers"),
-            "gene_likelihood": init.get("gene_likelihood"),
-            "dispersion": init.get("dispersion"),
-            "batch_representation": init.get("batch_representation"),
-            "encode_covariates": init.get("encode_covariates"),
-            "split_method": init.get("split_method"),
-            "split_aggregation": init.get("split_aggregation"),
-            "batch_key": setup.get("batch_key"),
-            "n_batch": stats.get("n_batch"),
-            "n_extra_categorical_covs": stats.get("n_extra_categorical_covs"),
-            "n_extra_continuous_covs": stats.get("n_extra_continuous_covs"),
-            "n_cells": d["n_train"] + d["n_validation"],
-            "n_genes": stats.get("n_vars"),
-            "epochs_run": d["epochs_run"],
-            "parameters": f"{d['n_params_total']:,}",
-        }
-    return pd.DataFrame(columns)
-
-
-def covariate_design(
-    model_path: Path | str,
-    tested: Sequence[str],
-    scaling: dict | None = None,
-) -> pd.DataFrame:
-    """How each covariate in ``tested`` enters the model -- including the ones that do not.
-
-    The ``not modelled`` rows are the point of this table. A covariate the model was never
-    told about, which then explains much of a latent dimension, means a dimension was
-    spent on nuisance structure; a covariate marked ``batch key`` that still scores high
-    means structure leaked past the correction. Read it beside :func:`factor_association`.
-
-    ``tested`` should be the same covariate list the association test uses, so nothing
-    that gets scored is missing from the table. Pass ``scaling`` --
-    ``embed.uns["covariate_scaling"]``, written by :func:`scale_continuous_covariates` --
-    to report whether a continuous covariate was log1p'd as well as z-scored; without it
-    the transform is reported as the generic "standardized".
-    """
-    scaling = scaling or {}
-    d = model_design(model_path)
-    setup, stats, fields = d["setup_args"], d["summary_stats"], d["field_registries"]
-    init = d["init_params"]
-
-    batch_key = setup.get("batch_key")
-    cat_state = (fields.get("extra_categorical_covs") or {}).get("state_registry") or {}
-    cat_levels = dict(
-        zip(
-            _as_list(cat_state.get("field_keys")),
-            _as_list(cat_state.get("n_cats_per_key")),
-            strict=False,
-        )
-    )
-    cont_state = (fields.get("extra_continuous_covs") or {}).get("state_registry") or {}
-    # continuous covariates are registered on the derived, standardized columns
-    cont_keys = {
-        str(col).removesuffix(SCALED_SUFFIX): str(col).endswith(SCALED_SUFFIX)
-        for col in _as_list(cont_state.get("columns"))
-    }
-    encoded = bool(init.get("encode_covariates"))
-
-    rows = []
-    for name in tested:
-        if name == batch_key:
-            role, representation = "batch key", init.get("batch_representation", "one-hot")
-            levels = stats.get("n_batch")
-        elif name in cat_levels:
-            role, representation = "categorical covariate", "one-hot"
-            levels = cat_levels[name]
-        elif name in cont_keys:
-            role = "continuous covariate"
-            if not cont_keys[name]:
-                representation = "as given"
-            elif name in scaling:
-                representation = (
-                    "log1p + z-scored" if scaling[name].get("log1p") else "z-scored"
-                )
-            else:
-                representation = "standardized"
-            levels = None
-        else:
-            role, representation, levels = "not modelled", "-", None
-        modelled = role != "not modelled"
-        rows.append(
-            {
-                "role": role,
-                "representation": representation,
-                "n_levels": levels,
-                "reaches_encoder": encoded if modelled else False,
-                "reaches_decoder": modelled,
-                "affects_dispersion": role == "batch key"
-                and init.get("dispersion") == "gene-batch",
-            }
-        )
-    return pd.DataFrame(rows, index=pd.Index(list(tested), name="covariate"))
-
 
 def latent_stats(embed, threshold: float = 0.5) -> pd.DataFrame:
     """Per-dimension usage statistics that a DRVI *or* an scVI embedding supports.
@@ -830,253 +749,74 @@ def calculate_interpretability(model, embed, methods=("IND", "OOD"), directional
         )
 
 
-def interpretability_scores(
-    embed,
-    gene_names=None,
-    key: str = "OOD_combined",
-    directional: bool = True,
-    hide_vanished: bool = True,
-):
-    """Genes x factors score table from ``embed.varm``, without reloading the model.
+# ------------------------------------------ neuropathology: CPS and cell abundance
+#
+# The CPS_* columns are SEA-AD's continuous pseudo-progression scores, and they are the
+# only truly continuous measure of disease severity in this cohort. They are *not*
+# per-cell measurements: `CPS_Global` is one value per donor and `CPS_Local` one value
+# per donor x brain region -- checked in section 1 of `03_progression.ipynb` rather than
+# assumed. Correlating a per-cell latent value against them over 231,107 rows therefore
+# tests 84 or 530 independent units with an n of 231,107 -- the p-value is meaningless and
+# even the effect size is dominated by whichever donors contributed the most nuclei. That
+# notebook aggregates to a unit first, and these names are what it reads.
 
-    Reproduces :meth:`scvi.external.DRVI.get_interpretability_scores` from the
-    artifacts ``train_drvi.py`` already wrote, so inspection needs no GPU. Columns are
-    ordered by reconstruction effect and titled ``DR n`` (``DR n+`` / ``DR n-`` when
-    ``directional``); vanished factors/directions are dropped by default.
-    """
-    if gene_names is None:
-        if "gene_names" not in embed.uns:
-            raise KeyError("pass gene_names, or use an embedding with uns['gene_names']")
-        gene_names = embed.uns["gene_names"]
-    gene_names = pd.Index(np.asarray(gene_names).astype(str))
+PERTPY_DIR = DATA / "pertpy"
+CPS_LOCAL_DIR = PERTPY_DIR / "CPS_Local"
+SCCODA_OBJECTS_DIR = CPS_LOCAL_DIR / "objects"
 
-    if directional:
-        effect = np.concatenate([embed.varm[f"{key}_positive"], embed.varm[f"{key}_negative"]])
-        info = (
-            pd.concat([embed.var.assign(direction="+"), embed.var.assign(direction="-")])
-            .assign(title=lambda df: df["title"] + df["direction"])
-            .reset_index(drop=True)
-        )
-        vanished = np.where(
-            info["direction"] == "+",
-            info["vanished_positive_direction"],
-            info["vanished_negative_direction"],
-        )
-    else:
-        effect = embed.varm[key]
-        info = embed.var.assign(direction="").reset_index(drop=True)
-        vanished = info["vanished"].to_numpy()
+SCCODA_SUMMARY_GLOB = "pertpy_summary_CPS_Local.*.csv"
+SCCODA_RESULTS_GLOB = "*_Supertype_results.csv"
+SCCODA_ABUNDANCE_GLOB = "*_Supertype_abundances.h5ad"
 
-    info["keep"] = ~vanished if hide_vanished else True
-    ordered = info[info["keep"]].sort_values(["order", "direction"])["title"]
-    return pd.DataFrame(effect, columns=gene_names, index=info["title"]).loc[ordered].T
+#: the pseudo-progression scores: the composite first, then its ABeta and pTau parts.
+CPS_COLUMNS = (
+    "CPS_Local",
+    "CPS_Local_ABeta",
+    "CPS_Local_pTau",
+    "CPS_Global",
+    "CPS_Global_ABeta",
+    "CPS_Global_pTau",
+)
 
 
-def top_genes_per_factor(scores: pd.DataFrame, n_top: int = 10) -> pd.DataFrame:
-    """Tidy ``factor, rank, gene, score`` table from an interpretability score matrix."""
-    rows = []
-    for factor in scores.columns:
-        top = scores[factor].nlargest(n_top)
-        rows.extend(
-            {"factor": factor, "rank": rank, "gene": gene, "score": score}
-            for rank, (gene, score) in enumerate(top.items(), start=1)
-        )
-    return pd.DataFrame(rows)
+# ------------------------------------------------------- the existing scCODA results
+#
+# `/data/multiregion/pertpy/CPS_Local/` holds a finished scCODA run over all 174
+# supertypes, not something this capsule computed. Only the paths live here; the readers
+# are in section 4 of `03_progression.ipynb`. Three artifacts:
+#
+#   pertpy_summary_CPS_Local.<date>.csv   the delivered per-region CPS_Local effect
+#                                         ("Local Model"), one value per supertype
+#   <class group>_Supertype_results.csv   the full sweep: every effect re-estimated
+#                                         against each of the 174 possible reference
+#                                         cell types, for 6 covariates and 11 regions
+#   objects/<class group>_Supertype_abundances.h5ad
+#                                         scCODA's input -- 907 libraries x 174
+#                                         supertype counts, with CPS_Local in obs
+#
+# The summary is the sweep's region-agnostic `Global` fit, thresholded and broadcast. For
+# every SST supertype the summary's repeated value matches the median `Global` effect over
+# the 173 references to within 0.016, and the ones it writes as 0.0 are exactly those whose
+# median posterior inclusion probability falls below ~0.83 (`SCCODA_INCLUSION_THRESHOLD`).
+# Two departures from that rule, both verified here:
+#
+#   * a supertype confined to one region takes that region's own fit instead of Global --
+#     `Sst_27-SEAAD` appears only in V1C, where the sweep gives -1.132 against a Global
+#     estimate of +0.005, and the summary carries -1.106;
+#   * MTG's values match neither the sweep's MTG rows nor Global (they differ by up to
+#     1.1), so they come from outside this file -- presumably SEA-AD's separately-fit MTG
+#     dataset. Treat an MTG cell as a different study's answer, not a regional contrast.
+#
+# So the two files answer different questions rather than duplicating one: the summary
+# gives the delivered, thresholded effect, the sweep gives the evidence behind it -- the
+# inclusion probability and how far the estimate moves as the reference cell type changes.
 
 
-def split_by_sign(embed, hide_vanished: bool = True) -> pd.DataFrame:
-    """Per-cell activation magnitude of each factor *direction*.
-
-    DRVI factors are directional: ``DR n+`` and ``DR n-`` can encode unrelated programs,
-    which is why the interpretability scores are computed per direction. A signed factor
-    value conflates the two, so an association carried by only one direction is diluted
-    by the cells sitting on the other side of zero. This returns ``relu(x)`` and
-    ``relu(-x)`` as separate non-negative columns.
-
-    Columns are labelled and ordered exactly like :func:`interpretability_scores`
-    (``DR 1+``, ``DR 1-``, ``DR 2+``, ...), so the two tables join on them. Directions
-    flagged vanished by ``set_latent_dimension_stats`` are dropped by default.
-    """
-    x = np.asarray(embed.X, dtype=np.float32)
-    info = embed.var
-    columns = {}
-    for pos, (_, row) in enumerate(info.iterrows()):
-        values = x[:, pos]
-        for direction, magnitude, dead in (
-            ("+", np.maximum(values, 0.0), row["vanished_positive_direction"]),
-            ("-", np.maximum(-values, 0.0), row["vanished_negative_direction"]),
-        ):
-            if hide_vanished and dead:
-                continue
-            columns[f"{row['title']}{direction}"] = magnitude
-
-    out = pd.DataFrame(columns, index=embed.obs_names)
-    order = (
-        pd.concat([info.assign(direction="+"), info.assign(direction="-")])
-        .assign(title=lambda df: df["title"] + df["direction"])
-        .sort_values(["order", "direction"])["title"]
-    )
-    return out[[c for c in order if c in out.columns]]
+#: posterior inclusion probability above which a swept effect is called credible.
+#: scCODA's own cut is FDR-derived per model (``credible_effects``) and is not stored in
+#: the delivered files, so it is recovered from where the summary's own calls fall: on the
+#: Global fit they separate ``Sst_9`` (median inclusion 0.815, written as 0.0) from
+#: ``Sst_22`` (0.841, kept), and 0.83 reproduces every one of the 18 calls.
+SCCODA_INCLUSION_THRESHOLD = 0.83
 
 
-def direction_activity(embed, hide_vanished: bool = True) -> pd.DataFrame:
-    """How often each factor direction is active, and how strongly.
-
-    Context for :func:`factor_association` in directional mode: a direction active in 2%
-    of cells with a high eta-squared means something very different from one active in 60%.
-    """
-    split = split_by_sign(embed, hide_vanished=hide_vanished)
-    return pd.DataFrame(
-        {
-            "frac_active": (split > 0).mean(),
-            "mean_when_active": split.where(split > 0).mean(),
-            "max": split.max(),
-        }
-    )
-
-
-def direction_asymmetry(assoc: pd.DataFrame) -> pd.DataFrame:
-    """Per-factor gap between its ``+`` and ``-`` association profiles.
-
-    Takes the directional output of :func:`factor_association`. A large gap means the two
-    directions of one factor track different covariates, which is exactly the structure a
-    signed association test hides.
-    """
-    rows = {}
-    for name in assoc.index:
-        base, direction = name[:-1].strip(), name[-1]
-        rows.setdefault(base, {})[direction] = assoc.loc[name]
-    records = {}
-    for base, directions in rows.items():
-        if set(directions) != {"+", "-"}:
-            continue
-        records[base] = (directions["+"] - directions["-"]).abs()
-    out = pd.DataFrame(records).T
-    out.index.name = "factor"
-    return out
-
-
-def _eta_squared_many(x: np.ndarray, codes: np.ndarray, n_groups: int) -> np.ndarray:
-    """Eta-squared of every column of ``x`` against one integer-coded grouping.
-
-    Vectorized with ``bincount``: a per-group Python loop is O(n x n_groups), which is
-    unusable at 902 ``library_prep`` levels.
-    """
-    counts = np.bincount(codes, minlength=n_groups).astype(np.float64)
-    live = counts > 0
-    grand = x.mean(axis=0)
-    total = ((x - grand) ** 2).sum(axis=0)
-
-    out = np.full(x.shape[1], np.nan)
-    if live.sum() < 2:
-        return out
-    for i in range(x.shape[1]):
-        if total[i] == 0:
-            continue
-        sums = np.bincount(codes, weights=x[:, i], minlength=n_groups)
-        means = sums[live] / counts[live]
-        out[i] = (counts[live] * (means - grand[i]) ** 2).sum() / total[i]
-    return out
-
-
-def _associate(
-    x: np.ndarray,
-    names,
-    obs: pd.DataFrame,
-    categorical: tuple[str, ...],
-    continuous: tuple[str, ...],
-) -> pd.DataFrame:
-    """Association of every column of ``x`` with each named covariate.
-
-    Categorical -> eta-squared (variance explained); continuous -> ``|Spearman rho|``.
-    """
-    from scipy import stats
-
-    x = np.asarray(x, dtype=np.float64)
-    out = pd.DataFrame(index=pd.Index(names), dtype=float)
-
-    for col in categorical:
-        if col not in obs:
-            logger.warning("skipping missing obs column %s", col)
-            continue
-        cat = pd.Categorical(obs[col])
-        keep = cat.codes >= 0
-        out[col] = _eta_squared_many(
-            x[keep], cat.codes[keep].astype(np.intp), len(cat.categories)
-        )
-
-    for col in continuous:
-        if col not in obs:
-            logger.warning("skipping missing obs column %s", col)
-            continue
-        values = pd.to_numeric(obs[col], errors="coerce").to_numpy(dtype=float)
-        keep = np.isfinite(values)
-        if keep.sum() < 3:
-            out[col] = np.nan
-            continue
-        # ranks every column against the covariate in one call
-        rho = stats.spearmanr(x[keep], values[keep]).statistic
-        out[col] = np.abs(np.atleast_2d(rho)[:-1, -1]) if x.shape[1] > 1 else abs(rho)
-    return out
-
-
-def factor_association(
-    embed,
-    categorical: tuple[str, ...] = (),
-    continuous: tuple[str, ...] = (),
-    directional: bool = False,
-) -> pd.DataFrame:
-    """Factors x covariates association matrix.
-
-    Categorical covariates get eta-squared (variance explained, 0-1); continuous ones
-    get ``|Spearman rho|``, so a single heatmap separates factors driven by biology
-    from those tracking technical covariates.
-
-    Parameters
-    ----------
-    directional
-        ``False`` (default) associates on the signed factor value, one row per factor.
-        ``True`` splits each factor into its two directions via :func:`split_by_sign`
-        first, giving one row per ``DR n+`` / ``DR n-``. Prefer ``True`` whenever a
-        factor might be bidirectional -- read it alongside
-        :func:`direction_activity`.
-
-    Only non-vanished factors (or directions, when ``directional``) are returned.
-    """
-    if directional:
-        split = split_by_sign(embed, hide_vanished=True)
-        return _associate(
-            split.to_numpy(), split.columns, embed.obs, categorical, continuous
-        )
-
-    if {"order", "vanished", "title"} <= set(embed.var.columns):
-        used = embed.var.sort_values("order")
-        used = used[~used["vanished"]]
-        x = np.asarray(embed[:, used.index].X)
-        names = used["title"].to_numpy()
-    else:
-        # An scVI embedding has no vanished/order bookkeeping to reorder by, but it does
-        # carry `used` from latent_stats -- and collapsed dimensions MUST be dropped here.
-        # Eta-squared is a variance ratio, so it is scale-invariant and cannot tell a live
-        # dimension from one sitting at the prior: a dimension with std 0.008 that wiggles
-        # slightly with library scores just as high as a real one, which fills the heatmap
-        # with noise that reads as signal.
-        keep = embed.var.index
-        if "used" in embed.var:
-            keep = embed.var.index[embed.var["used"].to_numpy().astype(bool)]
-            dropped = embed.n_vars - len(keep)
-            if dropped:
-                logger.info(
-                    "dropping %d of %d collapsed latent dimensions (var['used'] is False); "
-                    "eta-squared is scale-invariant and would score them like live ones",
-                    dropped,
-                    embed.n_vars,
-                )
-        subset = embed[:, keep]
-        x = np.asarray(subset.X)
-        names = (
-            subset.var["title"].to_numpy()
-            if "title" in subset.var
-            else subset.var_names.to_numpy()
-        )
-    return _associate(x, names, embed.obs, categorical, continuous)

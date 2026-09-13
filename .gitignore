@@ -4,3 +4,6 @@
 # Code Ocean runtime mounts, not repository content
 /results
 /scratch
+
+# Claude Code scaffolding, including nested worktree checkouts
+.claude/
