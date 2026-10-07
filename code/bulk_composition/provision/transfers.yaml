@@ -1,0 +1,48 @@
+# Synapse -> SEA-AD highly-sensitive S3 transfers approved in Stage 2 (2026-10-07).
+# ADKP data and derivatives must stay in highly-sensitive storage (sea-ad-s3 routing rules).
+# Each entry is either an explicit Synapse file ID or a folder whose file children are all copied.
+bucket: sea-ad-prod-highly-sensitive-711387118892-us-west-2
+prefix: adkp/genomics
+aws_profile: sensitive
+access: AD Knowledge Portal controlled access (Synapse Data Use Certificate)
+
+datasets:
+  # T3 -- exact bulk vs multiome donor overlap via the Rush projid mapping already on S3
+  - name: AMP-AD_DiverseCohorts_bulk_RNAseq
+    tier: T3
+    source: AMP-AD_DiverseCohorts (ADKP)
+    files:
+      metadata: [syn51757643, syn51757645, syn51757646]
+
+  # T2 -- scale-up training: harmonized raw gene counts (RNAseq_Harmonization) + metadata + Green labels
+  - name: ROSMAP_bulk_RNAseq
+    tier: T2
+    source: ROSMAP (syn3388564) and RNAseq_Harmonization (Rosmap_Gene_Quantification)
+    files:
+      processed_data:
+        - syn22283382  # batch1 gene_all_counts_matrix_clean
+        - syn22283384  # batch1 Study_all_metrics_matrix_clean
+        - syn22283379  # batch1 provenance
+        - syn22301601
+        - syn22301603
+        - syn22301598
+        - syn22314230
+        - syn22314232
+        - syn22314227
+        - syn25817661
+        - syn25817663
+        - syn25817655
+        - syn3505720   # legacy ROSMAP_RNAseq_FPKM_gene.tsv (CelMod / Green comparison)
+        - syn53694215  # Green 2024 cell-annotation.n437.csv
+      metadata: [syn21088596, syn21323366, syn3191087, syn29855598]
+
+  # T1 -- pilot: SEA-AD MTG bulk, 10 donors with native SEA-AD snRNA
+  - name: SEAAD_MTG_bulk_RNAseq
+    tier: T1
+    source: SEA-AD (syn26223298), Bulk RNAseq - MTG
+    folders:
+      # The BAMs average ~114 MB vs ~2.2 GB FASTQ per sample, so FASTQ is kept for re-quantification.
+      - {folder: syn51792520, suffixes: [.fpkm_tracking, .bam], subdir: processed_data}
+      - {folder: syn51792520, suffixes: [.fastq.gz], subdir: raw_data}
+    files:
+      metadata: [syn52118824, syn31149116, syn31149119, syn73713778]

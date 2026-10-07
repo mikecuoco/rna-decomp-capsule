@@ -1,0 +1,483 @@
+datasets:
+  AMP-AD_DiverseCohorts_bulk_RNAseq:
+    tier: T3
+    source: AMP-AD_DiverseCohorts (ADKP)
+    access: AD Knowledge Portal controlled access (Synapse Data Use Certificate)
+    s3_prefix: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/AMP-AD_DiverseCohorts_bulk_RNAseq/
+    copied: '2026-10-07'
+    n_files: 3
+    total_bytes: 1416002
+    files:
+    - subdir: metadata
+      syn_id: syn51757643
+      version: 16
+      name: AMP-AD_DiverseCohorts_assay_RNAseq_metadata.csv
+      size: 404935
+      md5: 1f1dfca32c2627e0d8078fc72546002c
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/AMP-AD_DiverseCohorts_bulk_RNAseq/metadata/AMP-AD_DiverseCohorts_assay_RNAseq_metadata.csv
+    - subdir: metadata
+      syn_id: syn51757645
+      version: 15
+      name: AMP-AD_DiverseCohorts_biospecimen_metadata.csv
+      size: 651374
+      md5: 8d5c3cf33864c24bdc38586e63d67a08
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/AMP-AD_DiverseCohorts_bulk_RNAseq/metadata/AMP-AD_DiverseCohorts_biospecimen_metadata.csv
+    - subdir: metadata
+      syn_id: syn51757646
+      version: 22
+      name: AMP-AD_DiverseCohorts_individual_metadata.csv
+      size: 359693
+      md5: 82e8473a617dc84312201e26be0855c3
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/AMP-AD_DiverseCohorts_bulk_RNAseq/metadata/AMP-AD_DiverseCohorts_individual_metadata.csv
+  ROSMAP_bulk_RNAseq:
+    tier: T2
+    source: ROSMAP (syn3388564) and RNAseq_Harmonization (Rosmap_Gene_Quantification)
+    access: AD Knowledge Portal controlled access (Synapse Data Use Certificate)
+    s3_prefix: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/ROSMAP_bulk_RNAseq/
+    copied: '2026-10-07'
+    n_files: 18
+    total_bytes: 789383174
+    files:
+    - subdir: metadata
+      syn_id: syn29855598
+      version: 2
+      name: ROSMAP_Covariates_ages_censored.tsv
+      size: 287863
+      md5: e30e003f177b0b770bc8d83215fc1d4a
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/ROSMAP_bulk_RNAseq/metadata/ROSMAP_Covariates_ages_censored.tsv
+    - subdir: metadata
+      syn_id: syn21088596
+      version: 6
+      name: ROSMAP_assay_RNAseq_metadata.csv
+      size: 413609
+      md5: e63d30522beeab1a497c32fe06c75285
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/ROSMAP_bulk_RNAseq/metadata/ROSMAP_assay_RNAseq_metadata.csv
+    - subdir: metadata
+      syn_id: syn21323366
+      version: 20
+      name: ROSMAP_biospecimen_metadata.csv
+      size: 1203320
+      md5: 8004dce267cc8163a74952c296e02703
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/ROSMAP_bulk_RNAseq/metadata/ROSMAP_biospecimen_metadata.csv
+    - subdir: metadata
+      syn_id: syn3191087
+      version: 12
+      name: ROSMAP_clinical.csv
+      size: 335210
+      md5: c91cc4985f7bb4908f356c674c57ae52
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/ROSMAP_bulk_RNAseq/metadata/ROSMAP_clinical.csv
+    - subdir: processed_data
+      syn_id: syn3505720
+      version: 3
+      name: ROSMAP_RNAseq_FPKM_gene.tsv
+      size: 121467632
+      md5: aaca8ce99e4ab539e6a723f53b603fb6
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/ROSMAP_bulk_RNAseq/processed_data/ROSMAP_RNAseq_FPKM_gene.tsv
+    - subdir: processed_data
+      syn_id: syn22283384
+      version: 4
+      name: ROSMAP_batch1_Study_all_metrics_matrix_clean.txt
+      size: 280027
+      md5: a33e09fbc68f3974d6de2ebeba845822
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/ROSMAP_bulk_RNAseq/processed_data/ROSMAP_batch1_Study_all_metrics_matrix_clean.txt
+    - subdir: processed_data
+      syn_id: syn22283382
+      version: 4
+      name: ROSMAP_batch1_gene_all_counts_matrix_clean.txt
+      size: 102472544
+      md5: 83537e8912a0dbb12e6ea6be7dcd13ae
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/ROSMAP_bulk_RNAseq/processed_data/ROSMAP_batch1_gene_all_counts_matrix_clean.txt
+    - subdir: processed_data
+      syn_id: syn22283379
+      version: 4
+      name: ROSMAP_batch1_provenance.csv
+      size: 15603
+      md5: 33fbdf23ce54bb0aadcacacb1a60581d
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/ROSMAP_bulk_RNAseq/processed_data/ROSMAP_batch1_provenance.csv
+    - subdir: processed_data
+      syn_id: syn22301603
+      version: 4
+      name: ROSMAP_batch2_Study_all_metrics_matrix_clean.txt
+      size: 727126
+      md5: d513166adf013621875deb6da57d4876
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/ROSMAP_bulk_RNAseq/processed_data/ROSMAP_batch2_Study_all_metrics_matrix_clean.txt
+    - subdir: processed_data
+      syn_id: syn22301601
+      version: 4
+      name: ROSMAP_batch2_gene_all_counts_matrix_clean.txt
+      size: 253683891
+      md5: bd6ce0ffdd4952dd96c4268bccc1f78a
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/ROSMAP_bulk_RNAseq/processed_data/ROSMAP_batch2_gene_all_counts_matrix_clean.txt
+    - subdir: processed_data
+      syn_id: syn22301598
+      version: 4
+      name: ROSMAP_batch2_provenance.csv
+      size: 50175
+      md5: 914d71f2ddb93748785c20c4e8f170c3
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/ROSMAP_bulk_RNAseq/processed_data/ROSMAP_batch2_provenance.csv
+    - subdir: processed_data
+      syn_id: syn22314232
+      version: 4
+      name: ROSMAP_batch3_Study_all_metrics_matrix_clean.txt
+      size: 158648
+      md5: ae3d2e41df49ddd47dc3297ff95f1163
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/ROSMAP_bulk_RNAseq/processed_data/ROSMAP_batch3_Study_all_metrics_matrix_clean.txt
+    - subdir: processed_data
+      syn_id: syn22314230
+      version: 4
+      name: ROSMAP_batch3_gene_all_counts_matrix_clean.txt
+      size: 54296047
+      md5: 6fd1cacbe65e5ea900b60614b7f14f97
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/ROSMAP_bulk_RNAseq/processed_data/ROSMAP_batch3_gene_all_counts_matrix_clean.txt
+    - subdir: processed_data
+      syn_id: syn22314227
+      version: 4
+      name: ROSMAP_batch3_provenance.csv
+      size: 17084
+      md5: 9b252a90b31bbcad3dbccb2d862e8829
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/ROSMAP_bulk_RNAseq/processed_data/ROSMAP_batch3_provenance.csv
+    - subdir: processed_data
+      syn_id: syn25817663
+      version: 4
+      name: ROSMAP_batch4_Study_all_metrics_matrix_clean.txt
+      size: 115329
+      md5: fafb270e24ea80f8421d73a5e2e6f3fc
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/ROSMAP_bulk_RNAseq/processed_data/ROSMAP_batch4_Study_all_metrics_matrix_clean.txt
+    - subdir: processed_data
+      syn_id: syn25817661
+      version: 4
+      name: ROSMAP_batch4_gene_all_counts_matrix_clean.txt
+      size: 40430033
+      md5: 9564ef9efcfba57562fc645844b3af7b
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/ROSMAP_bulk_RNAseq/processed_data/ROSMAP_batch4_gene_all_counts_matrix_clean.txt
+    - subdir: processed_data
+      syn_id: syn25817655
+      version: 4
+      name: ROSMAP_batch4_provenance.csv
+      size: 11120
+      md5: 56bc674407a19920b6196f8440dc17c1
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/ROSMAP_bulk_RNAseq/processed_data/ROSMAP_batch4_provenance.csv
+    - subdir: processed_data
+      syn_id: syn53694215
+      version: 4
+      name: cell-annotation.n437.csv
+      size: 213417913
+      md5: cfc7274a003c500ed0d25257c5bb8268
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/ROSMAP_bulk_RNAseq/processed_data/cell-annotation.n437.csv
+  SEAAD_MTG_bulk_RNAseq:
+    tier: T1
+    source: SEA-AD (syn26223298), Bulk RNAseq - MTG
+    access: AD Knowledge Portal controlled access (Synapse Data Use Certificate)
+    s3_prefix: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/
+    copied: '2026-10-07'
+    n_files: 44
+    total_bytes: 23453471444
+    files:
+    - subdir: metadata
+      syn_id: syn52118824
+      version: 2
+      name: SEA-AD_MTG_assay_RNAseq-BULK.csv
+      size: 2972
+      md5: 8ae4bec3548f1b805b72c4d4aced3ded
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/metadata/SEA-AD_MTG_assay_RNAseq-BULK.csv
+    - subdir: metadata
+      syn_id: syn31149119
+      version: 10
+      name: SEA-AD_biospecimen_metadata.csv
+      size: 248930
+      md5: ec23e29dcabf6934647bfbfd1ffc0114
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/metadata/SEA-AD_biospecimen_metadata.csv
+    - subdir: metadata
+      syn_id: syn31149116
+      version: 9
+      name: SEA-AD_individual_metadata.csv
+      size: 24218
+      md5: 05284bf2d717f22e01cea423fd7a501c
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/metadata/SEA-AD_individual_metadata.csv
+    - subdir: metadata
+      syn_id: syn73713778
+      version: 1
+      name: SEA-AD_individual_metadata_harmonized.csv
+      size: 33420
+      md5: 3fbf805a74f7a82752e71cd1b8a5871f
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/metadata/SEA-AD_individual_metadata_harmonized.csv
+    - subdir: processed_data
+      syn_id: syn51932730
+      version: 2
+      name: SQ_BTR3002-02-10_SQ_BTR3002-02-10_Aligned.sortedByCoord.out.bam
+      size: 140609630
+      md5: fad6ed6a2945203dc4bf6fd7e4bd8fea
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/processed_data/SQ_BTR3002-02-10_SQ_BTR3002-02-10_Aligned.sortedByCoord.out.bam
+    - subdir: processed_data
+      syn_id: syn51932753
+      version: 2
+      name: SQ_BTR3002-02-10_genes.fpkm_tracking
+      size: 3765580
+      md5: 52c368ce1c2e796a7236284b99b90f92
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/processed_data/SQ_BTR3002-02-10_genes.fpkm_tracking
+    - subdir: processed_data
+      syn_id: syn51932720
+      version: 2
+      name: SQ_BTR3002-02-1_SQ_BTR3002-02-1_Aligned.sortedByCoord.out.bam
+      size: 86723613
+      md5: 886224ace0ff90247b65192271469c83
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/processed_data/SQ_BTR3002-02-1_SQ_BTR3002-02-1_Aligned.sortedByCoord.out.bam
+    - subdir: processed_data
+      syn_id: syn51932744
+      version: 2
+      name: SQ_BTR3002-02-1_genes.fpkm_tracking
+      size: 3722253
+      md5: dfc9301e6daa0971a7b35106ced377f1
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/processed_data/SQ_BTR3002-02-1_genes.fpkm_tracking
+    - subdir: processed_data
+      syn_id: syn51932726
+      version: 2
+      name: SQ_BTR3002-02-2_SQ_BTR3002-02-2_Aligned.sortedByCoord.out.bam
+      size: 130498709
+      md5: 0159d53e990d3c50d5b2195855e9bcdf
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/processed_data/SQ_BTR3002-02-2_SQ_BTR3002-02-2_Aligned.sortedByCoord.out.bam
+    - subdir: processed_data
+      syn_id: syn51932745
+      version: 2
+      name: SQ_BTR3002-02-2_genes.fpkm_tracking
+      size: 3764903
+      md5: d2fabd661f2cd5b28fdea244bd80a756
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/processed_data/SQ_BTR3002-02-2_genes.fpkm_tracking
+    - subdir: processed_data
+      syn_id: syn51932728
+      version: 2
+      name: SQ_BTR3002-02-3_SQ_BTR3002-02-3_Aligned.sortedByCoord.out.bam
+      size: 126739827
+      md5: 4025e87f77cb93e13b3604d8d520b407
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/processed_data/SQ_BTR3002-02-3_SQ_BTR3002-02-3_Aligned.sortedByCoord.out.bam
+    - subdir: processed_data
+      syn_id: syn51932752
+      version: 2
+      name: SQ_BTR3002-02-3_genes.fpkm_tracking
+      size: 3762375
+      md5: 8f4475ed9fe80ad1ea1aafa632750afd
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/processed_data/SQ_BTR3002-02-3_genes.fpkm_tracking
+    - subdir: processed_data
+      syn_id: syn51932722
+      version: 2
+      name: SQ_BTR3002-02-4_SQ_BTR3002-02-4_Aligned.sortedByCoord.out.bam
+      size: 86703687
+      md5: 7ccb921874f02cd7fdff702f9626b132
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/processed_data/SQ_BTR3002-02-4_SQ_BTR3002-02-4_Aligned.sortedByCoord.out.bam
+    - subdir: processed_data
+      syn_id: syn51932747
+      version: 2
+      name: SQ_BTR3002-02-4_genes.fpkm_tracking
+      size: 3726912
+      md5: db14f65179c9da97fea065bfe17f1429
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/processed_data/SQ_BTR3002-02-4_genes.fpkm_tracking
+    - subdir: processed_data
+      syn_id: syn51932723
+      version: 2
+      name: SQ_BTR3002-02-5_SQ_BTR3002-02-5_Aligned.sortedByCoord.out.bam
+      size: 89632977
+      md5: efc432f82c525b40fce176198e36749d
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/processed_data/SQ_BTR3002-02-5_SQ_BTR3002-02-5_Aligned.sortedByCoord.out.bam
+    - subdir: processed_data
+      syn_id: syn51932749
+      version: 2
+      name: SQ_BTR3002-02-5_genes.fpkm_tracking
+      size: 3732566
+      md5: 3248620beacbb50cff2ee3295437c364
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/processed_data/SQ_BTR3002-02-5_genes.fpkm_tracking
+    - subdir: processed_data
+      syn_id: syn51932725
+      version: 2
+      name: SQ_BTR3002-02-6_SQ_BTR3002-02-6_Aligned.sortedByCoord.out.bam
+      size: 92728352
+      md5: 89a1e0d0efdccbe69b6e62f7521957c0
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/processed_data/SQ_BTR3002-02-6_SQ_BTR3002-02-6_Aligned.sortedByCoord.out.bam
+    - subdir: processed_data
+      syn_id: syn51932751
+      version: 2
+      name: SQ_BTR3002-02-6_genes.fpkm_tracking
+      size: 3729207
+      md5: 3f085d086e9c0cc9ad69a897217a9330
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/processed_data/SQ_BTR3002-02-6_genes.fpkm_tracking
+    - subdir: processed_data
+      syn_id: syn51932727
+      version: 2
+      name: SQ_BTR3002-02-7_SQ_BTR3002-02-7_Aligned.sortedByCoord.out.bam
+      size: 155269487
+      md5: 76203cc6d5d643357c1aefa77205c4f6
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/processed_data/SQ_BTR3002-02-7_SQ_BTR3002-02-7_Aligned.sortedByCoord.out.bam
+    - subdir: processed_data
+      syn_id: syn51932746
+      version: 2
+      name: SQ_BTR3002-02-7_genes.fpkm_tracking
+      size: 3783045
+      md5: 35457a5e52902cdc84b0de7690b8c794
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/processed_data/SQ_BTR3002-02-7_genes.fpkm_tracking
+    - subdir: processed_data
+      syn_id: syn51932729
+      version: 2
+      name: SQ_BTR3002-02-8_SQ_BTR3002-02-8_Aligned.sortedByCoord.out.bam
+      size: 112616226
+      md5: 21ca4def2a8e83016ecf7f776a25f4b8
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/processed_data/SQ_BTR3002-02-8_SQ_BTR3002-02-8_Aligned.sortedByCoord.out.bam
+    - subdir: processed_data
+      syn_id: syn51932748
+      version: 2
+      name: SQ_BTR3002-02-8_genes.fpkm_tracking
+      size: 3748498
+      md5: 012b00c65beb4591e5fcaed287dc9bdb
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/processed_data/SQ_BTR3002-02-8_genes.fpkm_tracking
+    - subdir: processed_data
+      syn_id: syn51932721
+      version: 2
+      name: SQ_BTR3002-02-9_SQ_BTR3002-02-9_Aligned.sortedByCoord.out.bam
+      size: 115209375
+      md5: 753c74a909b7c9057a48d459dc73fb7f
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/processed_data/SQ_BTR3002-02-9_SQ_BTR3002-02-9_Aligned.sortedByCoord.out.bam
+    - subdir: processed_data
+      syn_id: syn51932750
+      version: 2
+      name: SQ_BTR3002-02-9_genes.fpkm_tracking
+      size: 3748216
+      md5: f3d9c1402494443a42ad8579d0f7a4e6
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/processed_data/SQ_BTR3002-02-9_genes.fpkm_tracking
+    - subdir: raw_data
+      syn_id: syn51932840
+      version: 2
+      name: SQ_BTR3002-02-10_S23_L002_R1_001.fastq.gz
+      size: 1380277198
+      md5: bc30f64a58f368335929b1e5ac2cede1
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/raw_data/SQ_BTR3002-02-10_S23_L002_R1_001.fastq.gz
+    - subdir: raw_data
+      syn_id: syn51932836
+      version: 2
+      name: SQ_BTR3002-02-10_S23_L002_R2_001.fastq.gz
+      size: 1349066897
+      md5: a8fc06d5491c1bd0c47c48edc71e68c7
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/raw_data/SQ_BTR3002-02-10_S23_L002_R2_001.fastq.gz
+    - subdir: raw_data
+      syn_id: syn51932794
+      version: 2
+      name: SQ_BTR3002-02-1_S14_L002_R1_001.fastq.gz
+      size: 1067825934
+      md5: ada194cf713473229e8d3567e90894e2
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/raw_data/SQ_BTR3002-02-1_S14_L002_R1_001.fastq.gz
+    - subdir: raw_data
+      syn_id: syn51932795
+      version: 2
+      name: SQ_BTR3002-02-1_S14_L002_R2_001.fastq.gz
+      size: 1050740528
+      md5: b8b375e65ca7779f90730bdf4421c35f
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/raw_data/SQ_BTR3002-02-1_S14_L002_R2_001.fastq.gz
+    - subdir: raw_data
+      syn_id: syn51932801
+      version: 2
+      name: SQ_BTR3002-02-2_S15_L002_R1_001.fastq.gz
+      size: 1157567706
+      md5: fdf00ff28e523bd53a93e6801023d68d
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/raw_data/SQ_BTR3002-02-2_S15_L002_R1_001.fastq.gz
+    - subdir: raw_data
+      syn_id: syn51932800
+      version: 2
+      name: SQ_BTR3002-02-2_S15_L002_R2_001.fastq.gz
+      size: 1149050401
+      md5: 98fbfc8e56f0245714f844bbe16555da
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/raw_data/SQ_BTR3002-02-2_S15_L002_R2_001.fastq.gz
+    - subdir: raw_data
+      syn_id: syn51932802
+      version: 2
+      name: SQ_BTR3002-02-3_S16_L002_R1_001.fastq.gz
+      size: 1179898335
+      md5: 29b64e9ac75e7eb0758475b55366eabb
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/raw_data/SQ_BTR3002-02-3_S16_L002_R1_001.fastq.gz
+    - subdir: raw_data
+      syn_id: syn51932803
+      version: 2
+      name: SQ_BTR3002-02-3_S16_L002_R2_001.fastq.gz
+      size: 1160821847
+      md5: 915043c68761ff4792534b0c9600cf8a
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/raw_data/SQ_BTR3002-02-3_S16_L002_R2_001.fastq.gz
+    - subdir: raw_data
+      syn_id: syn51932793
+      version: 2
+      name: SQ_BTR3002-02-4_S17_L002_R1_001.fastq.gz
+      size: 815956280
+      md5: d923d95820162843af8976c0da2155b6
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/raw_data/SQ_BTR3002-02-4_S17_L002_R1_001.fastq.gz
+    - subdir: raw_data
+      syn_id: syn51932799
+      version: 2
+      name: SQ_BTR3002-02-4_S17_L002_R2_001.fastq.gz
+      size: 790945021
+      md5: a08f13dafd07564525c88a606b666b2a
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/raw_data/SQ_BTR3002-02-4_S17_L002_R2_001.fastq.gz
+    - subdir: raw_data
+      syn_id: syn51932797
+      version: 2
+      name: SQ_BTR3002-02-5_S18_L002_R1_001.fastq.gz
+      size: 1075795034
+      md5: b71c6646861386e55e4ff6b39e407219
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/raw_data/SQ_BTR3002-02-5_S18_L002_R1_001.fastq.gz
+    - subdir: raw_data
+      syn_id: syn51932796
+      version: 2
+      name: SQ_BTR3002-02-5_S18_L002_R2_001.fastq.gz
+      size: 1057140784
+      md5: 1828ddfb5956a631d6644e74101cacbe
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/raw_data/SQ_BTR3002-02-5_S18_L002_R2_001.fastq.gz
+    - subdir: raw_data
+      syn_id: syn51932831
+      version: 2
+      name: SQ_BTR3002-02-6_S19_L002_R1_001.fastq.gz
+      size: 942729778
+      md5: 11a4df16ff242567466406752d6045aa
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/raw_data/SQ_BTR3002-02-6_S19_L002_R1_001.fastq.gz
+    - subdir: raw_data
+      syn_id: syn51932832
+      version: 2
+      name: SQ_BTR3002-02-6_S19_L002_R2_001.fastq.gz
+      size: 923611633
+      md5: f0d5a1dc8315e50172ab39ffafca5012
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/raw_data/SQ_BTR3002-02-6_S19_L002_R2_001.fastq.gz
+    - subdir: raw_data
+      syn_id: syn51932839
+      version: 2
+      name: SQ_BTR3002-02-7_S20_L002_R1_001.fastq.gz
+      size: 1274267930
+      md5: 17ff0408ffdd44a0263c1f6b98a559b3
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/raw_data/SQ_BTR3002-02-7_S20_L002_R1_001.fastq.gz
+    - subdir: raw_data
+      syn_id: syn51932838
+      version: 2
+      name: SQ_BTR3002-02-7_S20_L002_R2_001.fastq.gz
+      size: 1258053967
+      md5: 94e3adfb21cabebbd35082dd74e9e1fa
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/raw_data/SQ_BTR3002-02-7_S20_L002_R2_001.fastq.gz
+    - subdir: raw_data
+      syn_id: syn51932837
+      version: 2
+      name: SQ_BTR3002-02-8_S21_L002_R1_001.fastq.gz
+      size: 1240319435
+      md5: cd0ac4f1ffe5175b1ebe9830a08a0b37
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/raw_data/SQ_BTR3002-02-8_S21_L002_R1_001.fastq.gz
+    - subdir: raw_data
+      syn_id: syn51932835
+      version: 2
+      name: SQ_BTR3002-02-8_S21_L002_R2_001.fastq.gz
+      size: 1220809731
+      md5: 86baeea319682ca87cb48087d169f683
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/raw_data/SQ_BTR3002-02-8_S21_L002_R2_001.fastq.gz
+    - subdir: raw_data
+      syn_id: syn51932833
+      version: 2
+      name: SQ_BTR3002-02-9_S22_L002_R1_001.fastq.gz
+      size: 1101356332
+      md5: 9b2303b9d9d64ea9607ae9b04286fd1f
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/raw_data/SQ_BTR3002-02-9_S22_L002_R1_001.fastq.gz
+    - subdir: raw_data
+      syn_id: syn51932834
+      version: 2
+      name: SQ_BTR3002-02-9_S22_L002_R2_001.fastq.gz
+      size: 1082711695
+      md5: a42082c5793851e3ac41e641711e565b
+      s3_uri: s3://sea-ad-prod-highly-sensitive-711387118892-us-west-2/adkp/genomics/SEAAD_MTG_bulk_RNAseq/raw_data/SQ_BTR3002-02-9_S22_L002_R2_001.fastq.gz

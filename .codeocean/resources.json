@@ -1,7 +1,4 @@
 {
 	"version": 1,
-	"resource_class": "dedicated",
-	"machine_config": {
-		"instance_type": "g4dn.12xlarge"
-	}
+	"resource_class": "xsmall"
 }
